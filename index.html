@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>자원 마스터: 분리배출 챌린지</title>
+<meta name="description" content="60초 동안 컨베이어 벨트를 따라 몰려오는 쓰레기를 올바른 9가지 수거함에 드래그하여 분리수거하는 교육용 게임" />
+
+<script src="https://cdn.tailwindcss.com"></script>
+
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@19.0.0",
+    "react/": "https://esm.sh/react@19.0.0/",
+    "react-dom/client": "https://esm.sh/react-dom@19.0.0/client",
+    "motion/react": "https://esm.sh/motion@11.11.13/react",
+    "lucide-react": "https://esm.sh/lucide-react@0.454.0",
+    "firebase/app": "https://esm.sh/firebase@10.13.0/app",
+    "firebase/firestore": "https://esm.sh/firebase@10.13.0/firestore"
+  }
+}
+</script>
+
+<style>
+  html, body { margin: 0; padding: 0; background-color: #f8fafc; }
+  #root { min-height: 100vh; }
+  .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+  .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+  .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(148,163,184,0.5); border-radius: 999px; }
+  #boot-status {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 12px; font-family: system-ui, sans-serif; color: #475569;
+    background: #f8fafc; z-index: 9999;
+  }
+  #boot-status.hidden { display: none; }
+  .boot-spinner {
+    width: 36px; height: 36px; border-radius: 50%;
+    border: 4px solid #d1fae5; border-top-color: #10b981;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<div id="boot-status">
+  <div class="boot-spinner"></div>
+  <div>게임을 불러오는 중...</div>
+</div>
+
+<script type="module">
+// 전역 에러 실시간 감지 포착 레이아웃
+window.addEventListener('error', (e) => {
+  const bootStatus = document.getElementById('boot-status');
+  if (!bootStatus) return;
+  const msg = (e.error && e.error.stack) ? e.error.stack : (e.message || String(e));
+  bootStatus.innerHTML =
+    '<div style="max-width:640px;padding:20px;text-align:center;">' +
+    '<div style="font-weight:800;color:#e11d48;margin-bottom:8px;font-size:16px;">앱 로드 중 예외 오류 발생</div>' +
+    '<pre style="text-white;text-align:left;white-space:pre-wrap;font-size:12px;background:#fff1f2;border:1px solid #fecdd3;padding:12px;border-radius:12px;color:#881337;max-height:50vh;overflow:auto;">' +
+    String(msg).replace(/</g, '&lt;') +
+    '</pre></div>';
+  bootStatus.classList.remove('hidden');
+});
+
+import React, { useState, useEffect, useRef, StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import { motion, AnimatePresence } from "motion/react";
+import { Play, Pause, Award, Heart, Trash2, Sparkles, Trophy, Apple, Layers, GlassWater, Package, FileText, Wine, BatteryCharging, Truck, MoveHorizontal, BookOpen, Volume2, VolumeX, Gamepad2 } from "lucide-react";
+import { initializeApp, getApp, getApps } from "firebase/app";
+import { getFirestore, collection, addDoc, setDoc, getDocs, query, orderBy, limit, onSnapshot, deleteDoc, doc } from "firebase/firestore";
+
+// ==================== Waste Category Definition ====================
+const WasteCategory = {
+    GENERAL: "일반 쓰레기",
+    FOOD: "음식물 쓰레기",
+    VINYL: "비닐류 재활용 쓰레기",
+    PLASTIC: "플라스틱류 재활용 쓰레기",
+    CAN: "캔류 재활용 쓰레기",
+    PAPER: "종이류 재활용 쓰레기",
+    GLASS: "유리 재활용 쓰레기",
+    OTHER: "기타 쓰레기",
+    LARGE: "대형 폐기물"
+};
+
+// ==================== Waste Items Dataset ====================
+const WASTE_ITEMS = [
+    { id: "pet_bottle", name: "투명페트병", emoji: "🥤", category: WasteCategory.PLASTIC, description: "생수 및 음료용 투명 페트병", difficulty: "쉬움", tip: "내용물을 비우고 라벨을 뗀 뒤 압착하여 분리수거합니다." },
+    { id: "tin_can", name: "통조림캔", emoji: "🥫", category: WasteCategory.CAN, description: "참치캔, 스팸캔 등 포장재", difficulty: "쉬움", tip: "물로 깨끗이 헹구고 배출하며 플라스틱 뚜껑은 분리합니다." },
+    { id: "bicycle", name: "폐자전거", emoji: "🚲", category: WasteCategory.LARGE, description: "고장난 자전거", difficulty: "보통", tip: "부피가 큰 자전거는 대형 생활 폐기물 스티커를 발부받아 버립니다." },
+    { id: "broken_glass", name: "깨진유리병", emoji: "🍾", category: WasteCategory.GENERAL, description: "파손된 유리 제품", difficulty: "어려움", tip: "깨진 유리는 재활용이 안 됩니다. 신문지에 싸서 종량제에 버리세요." },
+    { id: "toothbrush", name: "칫솔", emoji: "🪥", category: WasteCategory.GENERAL, description: "복합 재질 복합 칫솔", difficulty: "어려움", tip: "고무, 플라스틱, 솔이 섞여 있어 재활용이 불가하므로 일반쓰레기입니다." },
+    { id: "tissue", name: "사용한휴지", emoji: "🧻", category: WasteCategory.GENERAL, description: "오염된 휴지나 물티슈", difficulty: "쉬움", tip: "이물질이 묻은 화장지나 물티슈는 무조건 일반 쓰레기입니다." },
+    { id: "onion_peel", name: "양파껍질", emoji: "🧅", category: WasteCategory.GENERAL, description: "말라있는 채소 껍질류", difficulty: "어려움", tip: "동물 사료로 쓸 수 없는 양파/마늘 껍질, 뿌리는 일반 쓰레기입니다." },
+    { id: "battery", name: "폐건전지", emoji: "🔋", category: WasteCategory.OTHER, description: "수명이 다한 건전지", difficulty: "보통", tip: "중금속 유출 우려가 있으므로 전용 건전지 수거함에 안전하게 버립니다." },
+    { id: "flyer", name: "전단지", emoji: "📄", category: WasteCategory.PAPER, description: "종이 전단지 홍보물", difficulty: "쉬움", tip: "코팅되지 않은 순수 종이류 전단지는 종이류로 재활용 가능합니다." },
+    { id: "snack_bag", name: "과자봉지", emoji: "🍬", category: WasteCategory.VINYL, description: "과자 및 라면 봉지류", difficulty: "보통", tip: "포장 뒷면에 비닐류 마크가 있으므로 깨끗이 털어 비닐류에 버립니다." },
+    { id: "banana_peel", name: "바나나껍질", emoji: "🍌", category: WasteCategory.FOOD, description: "부드러운 과일의 껍질", difficulty: "쉬움", tip: "부드러운 과일 껍질은 사료 가공이 가능하므로 음식물 쓰레기입니다." },
+    { id: "fluorescent_lamp", name: "폐형광등", emoji: "💡", category: WasteCategory.OTHER, description: "수명이 다한 조명등", difficulty: "보통", tip: "유해 물질이 있으므로 깨지지 않게 전용 폐형광등 수거함에 배출합니다." },
+    { id: "old_clothes", name: "헌옷", emoji: "👕", category: WasteCategory.OTHER, description: "입지 않는 의류", difficulty: "보통", tip: "상태가 양호한 헌 옷은 주변의 전용 의류수거함에 따로 모아 배출합니다." },
+    { id: "expired_medicine", name: "폐의약품", emoji: "💊", category: WasteCategory.OTHER, description: "유효기간이 지난 약품", difficulty: "어려움", tip: "환경 오염을 유발하므로 싱크대 대신 약국이나 보건소 전용 수거함에 버립니다." },
+    { id: "sofa", name: "소파", emoji: "🛋️", category: WasteCategory.LARGE, description: "폐가구류", difficulty: "쉬움", tip: "대형 폐기물로 관할 지자체에 신고한 후 배출 스티커를 부착해야 합니다." },
+    { id: "receipt", name: "영수증", emoji: "🧾", category: WasteCategory.GENERAL, description: "혼합 감열지 영수증", difficulty: "어려움", tip: "화학 물질이 코팅된 감열지 영수증은 재활용이 안 되어 일반 쓰레기입니다." },
+    { id: "ramen_bowl", name: "컵라면용기", emoji: "🥡", category: WasteCategory.GENERAL, description: "얼룩진 스티로폼 용기", difficulty: "어려움", tip: "빨간 국물 오염이 빠지지 않는 컵라면 용기는 일반 쓰레기로 분류합니다." },
+    { id: "bubble_wrap", name: "에어캡", emoji: "🫧", category: WasteCategory.VINYL, description: "택배 뽁뽁이 완충재", difficulty: "보통", tip: "이물질이 묻지 않은 깨끗한 투명 에어캡은 비닐류로 분리 배출합니다." },
+    { id: "egg_shell", name: "달걀껍데기", emoji: "🥚", category: WasteCategory.GENERAL, description: "단단한 조류 알 껍데기", difficulty: "어려움", tip: "석회질 물질인 계란 및 메추리알 껍질은 사료화가 안 되어 일반 쓰레기입니다." },
+    { id: "greasy_pizza_paper", name: "오염된 박스", emoji: "📦", category: WasteCategory.GENERAL, description: "음식물이 묻은 종이상자", difficulty: "보통", tip: "기름이나 양념으로 심하게 이물질이 물든 종이는 일반 종량제 봉투에 버립니다." },
+    { id: "shampoo_bottle", name: "샴푸통", emoji: "🧴", category: WasteCategory.PLASTIC, description: "욕실 플라스틱 용기", difficulty: "보통", tip: "스프링이 든 플라스틱 펌프는 제거하여 일반쓰레기로 버리고 본체만 플라스틱으로 배출합니다." }
+];
+
+// ==================== Firebase Config & Fallback Database ====================
+const firebaseConfig = {
+    apiKey: "AIzaSyB9EGXrmr7gDRf8mB2kYpwmSyTKUAdD4oc",
+    authDomain: "gen-lang-client-0607337181.firebaseapp.com",
+    projectId: "gen-lang-client-0607337181",
+    storageBucket: "gen-lang-client-0607337181.firebasestorage.app",
+    messagingSenderId: "492538377364",
+    appId: "1:492538377364:web:6951a10a15b66db2267081"
+};
+
+let db = null;
+try {
+    const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+    db = getFirestore(app, "ai-studio-3ae0411a-f546-4dec-a673-c7e8df38aa42");
+} catch (error) {
+    console.warn("Firebase 간이 백업 전환됨 (로컬 스토리지 모드 실행)");
+}
+
+const LOCAL_KEY = "waste_sorting_leaderboard_v1";
+function getLocalLeaderboard() {
+    const data = localStorage.getItem(LOCAL_KEY);
+    if (!data) {
+        const mock = [
+            { name: "분리배출고수", score: 1250, attempts: 24, accuracy: 95, date: "2026-07-08" },
+            { name: "에코워리어", score: 1080, attempts: 22, accuracy: 90, date: "2026-07-07" },
+            { name: "초록지구인", score: 960, attempts: 20, accuracy: 85, date: "2026-07-08" }
+        ];
+        localStorage.setItem(LOCAL_KEY, JSON.stringify(mock));
+        return mock;
+    }
+    try { return JSON.parse(data); } catch (e) { return []; }
+}
+
+function saveLocalLeaderboard(entries) {
+    localStorage.setItem(LOCAL_KEY, JSON.stringify(entries));
+}
+
+function subscribeToLeaderboard(callback) {
+    if (db) {
+        try {
+            const q = query(collection(db, "leaderboard"), orderBy("score", "desc"), limit(20));
+            return onSnapshot(q, (snap) => {
+                const entries = [];
+                snap.forEach((doc) => {
+                    const d = doc.data();
+                    entries.push({ id: doc.id, ...d });
+                });
+                callback(entries.length > 0 ? entries : getLocalLeaderboard());
+            }, () => {
+                callback(getLocalLeaderboard());
+            });
+        } catch (e) {
+            callback(getLocalLeaderboard());
+            return () => {};
+        }
+    } else {
+        callback(getLocalLeaderboard());
+        return () => {};
+    }
+}
+
+async function saveLeaderboardEntry(entry) {
+    if (db) {
+        try {
+            await addDoc(collection
