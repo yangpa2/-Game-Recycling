@@ -1,0 +1,1741 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>자원 마스터: 분리배출 챌린지</title>
+<meta name="description" content="60초 동안 컨베이어 벨트를 따라 몰려오는 쓰레기를 올바른 9가지 수거함에 드래그하여 분리수거하는 교육용 게임" />
+
+<!-- Tailwind CSS (빌드 없이 CDN으로 사용) -->
+<script src="https://cdn.tailwindcss.com"></script>
+
+<!-- Import Map: 브라우저가 bare import(react, motion/react 등)를 CDN(esm.sh)에서 바로 불러오도록 설정 -->
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@19.0.1",
+    "react/": "https://esm.sh/react@19.0.1/",
+    "react-dom/client": "https://esm.sh/react-dom@19.0.1/client?external=react",
+    "motion/react": "https://esm.sh/motion@12.23.24/react?external=react,react-dom",
+    "lucide-react": "https://esm.sh/lucide-react@0.546.0?external=react",
+    "firebase/app": "https://esm.sh/firebase@12.15.0/app",
+    "firebase/firestore": "https://esm.sh/firebase@12.15.0/firestore"
+  }
+}
+</script>
+
+<style>
+  html, body { margin: 0; padding: 0; }
+  #root { min-height: 100vh; }
+  .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+  .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+  .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(148,163,184,0.5); border-radius: 999px; }
+  #boot-status {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 12px; font-family: system-ui, sans-serif; color: #475569;
+    background: #f8fafc; z-index: 9999;
+  }
+  #boot-status.hidden { display: none; }
+  .boot-spinner {
+    width: 36px; height: 36px; border-radius: 50%;
+    border: 4px solid #d1fae5; border-top-color: #10b981;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<div id="boot-status">
+  <div class="boot-spinner"></div>
+  <div>게임을 불러오는 중...</div>
+</div>
+
+<!-- 미리 컴파일된 앱 코드 (TSX -> 순수 JS로 사전 변환됨, 브라우저는 그냥 import만 수행) -->
+<script type="module">
+window.addEventListener('error', (e) => {
+  const bootStatus = document.getElementById('boot-status');
+  if (!bootStatus) return;
+  const msg = (e.error && e.error.stack) ? e.error.stack : (e.message || String(e));
+  bootStatus.innerHTML =
+    '<div style="max-width:640px;padding:20px;">' +
+    '<div style="font-weight:800;color:#e11d48;margin-bottom:8px;">\uC571\uC744 \uBD88\uB7EC\uC624\uB294 \uC911 \uC624\uB958\uAC00 \uBC1C\uC0DD\uD588\uC2B5\uB2C8\uB2E4</div>' +
+    '<pre style="white-space:pre-wrap;font-size:12px;background:#fff1f2;border:1px solid #fecdd3;padding:12px;border-radius:12px;color:#881337;max-height:50vh;overflow:auto;">' +
+    String(msg).replace(/</g, '&lt;') +
+    '</pre></div>';
+  bootStatus.classList.remove('hidden');
+});
+
+import React, { useState, useEffect, useRef, StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import { motion, AnimatePresence } from "motion/react";
+import { Play, Pause, RotateCcw, Volume2, VolumeX, Flame, RefreshCw, Heart, Trash2, Sparkles, Award, Home, Trophy, X, QrCode, Copy, Apple, Layers, GlassWater, Package, FileText, Wine, BatteryCharging, Truck, MoveHorizontal, BookOpen, Globe, HelpCircle, Lock, AlertCircle, ChevronLeft, Check, Gamepad2 } from "lucide-react";
+import { initializeApp, getApp, getApps } from "firebase/app";
+import { getFirestore, collection, addDoc, setDoc, getDocs, query, orderBy, limit, onSnapshot, deleteDoc, doc } from "firebase/firestore";
+// ==================== types.ts ====================
+export var WasteCategory;
+(function (WasteCategory) {
+    WasteCategory["GENERAL"] = "\uC77C\uBC18 \uC4F0\uB808\uAE30";
+    WasteCategory["FOOD"] = "\uC74C\uC2DD\uBB3C \uC4F0\uB808\uAE30";
+    WasteCategory["VINYL"] = "\uBE44\uB2D0\uB958 \uC7AC\uD65C\uC6A9 \uC4F0\uB808\uAE30";
+    WasteCategory["PLASTIC"] = "\uD50C\uB77C\uC2A4\uD2F1\uB958 \uC7AC\uD65C\uC6A9 \uC4F0\uB808\uAE30";
+    WasteCategory["CAN"] = "\uCE94\uB958 \uC7AC\uD65C\uC6A9 \uC4F0\uB808\uAE30";
+    WasteCategory["PAPER"] = "\uC885\uC774\uB958 \uC7AC\uD65C\uC6A9 \uC4F0\uB808\uAE30";
+    WasteCategory["GLASS"] = "\uC720\uB9AC \uC7AC\uD65C\uC6A9 \uC4F0\uB808\uAE30";
+    WasteCategory["OTHER"] = "\uAE30\uD0C0 \uC4F0\uB808\uAE30";
+    WasteCategory["LARGE"] = "\uB300\uD615 \uD3D0\uAE30\uBB3C";
+})(WasteCategory || (WasteCategory = {}));
+// ==================== data.ts (쓰레기 아이템 데이터) ====================
+export const WASTE_ITEMS = [
+    {
+        id: "pet_bottle",
+        name: "투명페트병",
+        emoji: "🥤",
+        category: WasteCategory.PLASTIC,
+        description: "생수 및 음료용 투명 페트병",
+        difficulty: "쉬움",
+        tip: "내용물을 깨끗이 비우고, 라벨 스티커를 떼어낸 뒤 압착해서 플라스틱류로 배출합니다.",
+    },
+    {
+        id: "tin_can",
+        name: "통조림캔",
+        emoji: "🥫",
+        category: WasteCategory.CAN,
+        description: "참치캔, 스팸캔, 통조림 용기",
+        difficulty: "쉬움",
+        tip: "내용물을 완전히 비우고 물로 행군 후 배출합니다. 플라스틱 뚜껑은 따로 분리해 주세요.",
+    },
+    {
+        id: "bicycle",
+        name: "폐자전거",
+        emoji: "🚲",
+        category: WasteCategory.LARGE,
+        description: "고장 나서 쓰지 못하는 자전거",
+        difficulty: "보통",
+        tip: "부피가 크고 부품 혼합이 많은 폐자전거는 대형 생활 폐기물 신고 후 스티커를 부착해 배출합니다.",
+    },
+    {
+        id: "broken_glass",
+        name: "깨진유리병",
+        emoji: "🍾",
+        category: WasteCategory.GENERAL,
+        description: "금이 가거나 깨진 유리용기",
+        difficulty: "어려움",
+        tip: "깨진 유리는 재활용이 불가능합니다. 신문지 등으로 꼼꼼히 싸서 일반 쓰레기(종량제)로 버려야 합니다.",
+    },
+    {
+        id: "toothbrush",
+        name: "칫솔",
+        emoji: "🪥",
+        category: WasteCategory.GENERAL,
+        description: "복합 재질로 제작된 플라스틱 칫솔",
+        difficulty: "어려움",
+        tip: "칫솔은 고무, 플라스틱, 미세모 등 여러 재질이 섞여 분리가 어려우므로 일반 쓰레기로 버립니다.",
+    },
+    {
+        id: "tissue",
+        name: "사용한휴지",
+        emoji: "🧻",
+        category: WasteCategory.GENERAL,
+        description: "물티슈 또는 이물질이 묻은 화장지",
+        difficulty: "쉬움",
+        tip: "오염되었거나 한 번 사용된 휴지/물티슈는 재활용이 절대 불가하므로 일반 쓰레기로 분리합니다.",
+    },
+    {
+        id: "onion_peel",
+        name: "양파껍질",
+        emoji: "🧅",
+        category: WasteCategory.GENERAL,
+        description: "양파나 마늘의 마른 껍질, 뿌리",
+        difficulty: "어려움",
+        tip: "양파/마늘의 껍질이나 뿌리, 달걀 껍데기는 섬유질이 많고 영양분이 없어 동물의 사료로 쓸 수 없어 일반 쓰레기입니다.",
+    },
+    {
+        id: "battery",
+        name: "폐건전지",
+        emoji: "🔋",
+        category: WasteCategory.OTHER,
+        description: "수명이 다한 알칼라인 건전지",
+        difficulty: "보통",
+        tip: "건전지에는 중금속이 포함되어 있어 매립 시 환경오염을 유발하므로 반드시 아파트/동주민센터의 전용 건전지 수거함에 버립니다.",
+    },
+    {
+        id: "flyer",
+        name: "전단지",
+        emoji: "📄",
+        category: WasteCategory.PAPER,
+        description: "가정으로 배달된 종이 홍보물",
+        difficulty: "쉬움",
+        tip: "코팅이 되어 있지 않은 일반 종이 전단지는 종이류 재활용으로 배출합니다.",
+    },
+    {
+        id: "snack_bag",
+        name: "과자봉지",
+        emoji: "🍬",
+        category: WasteCategory.VINYL,
+        description: "감자칩, 라면 등의 비닐 포장재",
+        difficulty: "보통",
+        tip: "라면봉지, 과자봉지는 비닐류 마크가 있으므로 이물질을 털어내거나 씻어서 비닐류로 분리 배출합니다.",
+    },
+    {
+        id: "banana_peel",
+        name: "바나나껍질",
+        emoji: "🍌",
+        category: WasteCategory.FOOD,
+        description: "부드러운 과일 껍질",
+        difficulty: "쉬움",
+        tip: "바나나, 사과, 수박 등 수분이 많고 부드러운 과일 껍질은 사료로 가공이 가능하여 음식물 쓰레기로 배출합니다.",
+    },
+    {
+        id: "fluorescent_lamp",
+        name: "폐형광등",
+        emoji: "💡",
+        category: WasteCategory.OTHER,
+        description: "수명이 다한 일자형/U자형 형광등",
+        difficulty: "보통",
+        tip: "수은 가스가 들어있어 깨지면 유해하므로 깨지지 않은 상태로 반드시 동주민센터 등의 형광등 전용 수거함에 배출합니다.",
+    },
+    {
+        id: "old_clothes",
+        name: "헌옷",
+        emoji: "👕",
+        category: WasteCategory.OTHER,
+        description: "유행이 지나거나 작아진 의류",
+        difficulty: "보통",
+        tip: "입을 수 있는 헌옷은 아파트나 주택가 주변의 '의류 수거함'에 분리 배출합니다.",
+    },
+    {
+        id: "expired_medicine",
+        name: "폐의약품",
+        emoji: "💊",
+        category: WasteCategory.OTHER,
+        description: "유효기간이 지난 물약, 알약",
+        difficulty: "어려움",
+        tip: "약 성분이 싱크대나 하수구를 통해 흘러가면 생태계를 파괴하므로 반드시 약국이나 보건소의 전용 수거함에 넣어야 합니다.",
+    },
+    {
+        id: "sofa",
+        name: "소파",
+        emoji: "🛋️",
+        category: WasteCategory.LARGE,
+        description: "낡아서 버리는 3인용 가죽 소파",
+        difficulty: "쉬움",
+        tip: "대형 가구류인 소파는 관할 주민센터나 모바일 앱을 통해 대형 폐기물 수수료를 납부하고 스티커를 받아 배출해야 합니다.",
+    },
+    {
+        id: "receipt",
+        name: "영수증",
+        emoji: "🧾",
+        category: WasteCategory.GENERAL,
+        description: "마트나 카페에서 받은 대기표/영수증",
+        difficulty: "어려움",
+        tip: "영수증 용지는 감열지로 다양한 화학물질이 코팅되어 있어 종이류로 재활용할 수 없으므로 일반 쓰레기로 분류합니다.",
+    },
+    {
+        id: "ramen_bowl",
+        name: "컵라면용기",
+        emoji: "🥡",
+        category: WasteCategory.GENERAL,
+        description: "빨간 국물 자국이 깊게 밴 스티로폼 용기",
+        difficulty: "어려움",
+        tip: "음식물 얼룩이나 국물 자국이 빠지지 않는 스티로폼 용기나 컵라면 용기는 재활용 불가하며 일반 쓰레기로 버립니다.",
+    },
+    {
+        id: "bubble_wrap",
+        name: "에어캡",
+        emoji: "🫧",
+        category: WasteCategory.VINYL,
+        description: "택배 완충용 비닐 에어캡",
+        difficulty: "보통",
+        tip: "공기를 굳이 빼지 않아도 투명하고 깨끗하다면 비닐류 재활용 수거함으로 분리 배출이 가능합니다.",
+    },
+    {
+        id: "egg_shell",
+        name: "달걀껍데기",
+        emoji: "🥚",
+        category: WasteCategory.GENERAL,
+        description: "계란, 메추리알 등 알 껍데기",
+        difficulty: "어려움",
+        tip: "칼슘 성분의 딱딱한 계란 껍질은 가축의 소화 장애를 유발하므로 음식물 쓰레기가 아닌 일반 쓰레기로 분류해야 합니다.",
+    },
+    {
+        id: "greasy_pizza_paper",
+        name: "오염된 박스",
+        emoji: "📦",
+        category: WasteCategory.GENERAL,
+        description: "피자 기름과 소스가 잔뜩 묻은 깔개 종이",
+        difficulty: "보통",
+        tip: "기름기나 음식물이 묻어 오염된 종이는 종이류로 재활용할 수 없으므로 종량제 봉투(일반 쓰레기)에 담아 버립니다.",
+    },
+    {
+        id: "shampoo_bottle",
+        name: "샴푸통",
+        emoji: "🧴",
+        category: WasteCategory.PLASTIC,
+        description: "욕실용 샴푸/린스 용기",
+        difficulty: "보통",
+        tip: "펌프 헤드 안에는 금속 스프링이 있어 스프링 펌프는 잘라서 일반쓰레기로 버리고 본체 용기만 깨끗이 씻어 플라스틱으로 배출합니다.",
+    },
+];
+// ==================== firebase.ts (Firestore 연동 / 로컬스토리지 폴백) ====================
+// Firebase Configuration Placeholders
+// -------------------------------------------------------------
+// 실시간 글로벌 랭킹을 사용하려면 아래 플레이스홀더를 실제 Firebase 설정값으로 변경하거나,
+// .env 파일에 VITE_FIREBASE_ 로 시작하는 환경 변수를 정의해 주세요.
+const firebaseConfig = {
+    apiKey: "AIzaSyB9EGXrmr7gDRf8mB2kYpwmSyTKUAdD4oc",
+    authDomain: "gen-lang-client-0607337181.firebaseapp.com",
+    projectId: "gen-lang-client-0607337181",
+    storageBucket: "gen-lang-client-0607337181.firebasestorage.app",
+    messagingSenderId: "492538377364",
+    appId: "1:492538377364:web:6951a10a15b66db2267081"
+};
+// Check if Firebase config is actually provided (not using placeholders)
+const isFirebaseConfigured = firebaseConfig.apiKey &&
+    !firebaseConfig.apiKey.includes("PLACEHOLDER") &&
+    firebaseConfig.projectId &&
+    !firebaseConfig.projectId.includes("PLACEHOLDER");
+let db = null;
+if (isFirebaseConfigured) {
+    try {
+        const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+        const databaseId = "ai-studio-3ae0411a-f546-4dec-a673-c7e8df38aa42";
+        db = getFirestore(app, databaseId);
+        console.log("Firebase가 정상적으로 감지되어 실시간 파이어베이스 DB를 활성화합니다. (DB: " + databaseId + ")");
+    }
+    catch (error) {
+        console.error("Firebase 초기화 중 에러가 발생했습니다. 로컬스토리지 모드로 작동합니다:", error);
+    }
+}
+else {
+    console.log("Firebase 설정이 비어있거나 플레이스홀더 상태입니다. 로컬 스토리지(LocalStorage) 모드로 안전하게 작동합니다.");
+}
+// System-Mandated Firebase Error Handling
+var OperationType;
+(function (OperationType) {
+    OperationType["CREATE"] = "create";
+    OperationType["UPDATE"] = "update";
+    OperationType["DELETE"] = "delete";
+    OperationType["LIST"] = "list";
+    OperationType["GET"] = "get";
+    OperationType["WRITE"] = "write";
+})(OperationType || (OperationType = {}));
+function handleFirestoreError(error, operationType, path) {
+    const errInfo = {
+        error: error instanceof Error ? error.message : String(error),
+        authInfo: {
+            userId: null,
+            email: null,
+        },
+        operationType,
+        path
+    };
+    console.error('Firestore Error: ', JSON.stringify(errInfo));
+    throw new Error(JSON.stringify(errInfo));
+}
+// LocalStorage Helper functions
+const LOCAL_LEADERBOARD_KEY = "waste_sorting_game_leaderboard";
+function getLocalLeaderboard() {
+    const data = localStorage.getItem(LOCAL_LEADERBOARD_KEY);
+    if (!data)
+        return getMockLeaderboard();
+    try {
+        return JSON.parse(data);
+    }
+    catch (e) {
+        return getMockLeaderboard();
+    }
+}
+function saveLocalLeaderboard(entries) {
+    localStorage.setItem(LOCAL_LEADERBOARD_KEY, JSON.stringify(entries));
+}
+// Initial Mock data for a lively global-feeling leaderboard from day one!
+function getMockLeaderboard() {
+    const mockData = [
+        { name: "분리배출고수", score: 1250, attempts: 24, accuracy: 95, date: "2026-07-08" },
+        { name: "에코워리어", score: 1080, attempts: 22, accuracy: 90, date: "2026-07-07" },
+        { name: "초록지구인", score: 960, attempts: 20, accuracy: 85, date: "2026-07-08" },
+        { name: "지구살리미", score: 840, attempts: 18, accuracy: 88, date: "2026-07-06" },
+        { name: "재활용마스터", score: 720, attempts: 16, accuracy: 81, date: "2026-07-08" },
+    ];
+    localStorage.setItem(LOCAL_LEADERBOARD_KEY, JSON.stringify(mockData));
+    return mockData;
+}
+// Facade DB Interface (Combines Firestore and LocalStorage fallback)
+export async function saveLeaderboardEntry(entry) {
+    const cleanEntry = {
+        name: entry.name,
+        score: entry.score,
+        attempts: entry.attempts,
+        accuracy: entry.accuracy,
+        date: entry.date,
+    };
+    if (isFirebaseConfigured && db) {
+        const path = "leaderboard";
+        try {
+            if (entry.id) {
+                await setDoc(doc(db, path, entry.id), cleanEntry);
+            }
+            else {
+                await addDoc(collection(db, path), cleanEntry);
+            }
+            console.log("Firebase Firestore에 랭킹이 성공적으로 등록되었습니다.");
+        }
+        catch (error) {
+            handleFirestoreError(error, OperationType.WRITE, path);
+        }
+    }
+    else {
+        // LocalStorage Fallback
+        const localList = getLocalLeaderboard();
+        if (entry.id) {
+            const existingIndex = localList.findIndex((e) => e.id === entry.id);
+            if (existingIndex !== -1) {
+                localList[existingIndex] = { ...cleanEntry, id: entry.id };
+            }
+            else {
+                localList.push({ ...cleanEntry, id: entry.id });
+            }
+        }
+        else {
+            localList.push(cleanEntry);
+        }
+        // Sort by score descending
+        localList.sort((a, b) => b.score - a.score);
+        // Keep top 100
+        saveLocalLeaderboard(localList.slice(0, 100));
+        console.log("로컬 스토리지에 랭킹이 성공적으로 등록되었습니다.");
+    }
+}
+export async function getLeaderboardEntries() {
+    if (isFirebaseConfigured && db) {
+        const path = "leaderboard";
+        try {
+            const q = query(collection(db, path), orderBy("score", "desc"), limit(20));
+            const querySnapshot = await getDocs(q);
+            const entries = [];
+            querySnapshot.forEach((doc) => {
+                const data = doc.data();
+                entries.push({
+                    id: doc.id,
+                    name: data.name || "익명",
+                    score: data.score || 0,
+                    attempts: data.attempts || 0,
+                    accuracy: data.accuracy || 0,
+                    date: data.date || "",
+                });
+            });
+            // If Firestore is empty, provide mock data or merge
+            if (entries.length === 0) {
+                return getLocalLeaderboard();
+            }
+            return entries;
+        }
+        catch (error) {
+            console.error("Firebase에서 데이터를 읽어오는 데 실패하여 로컬 스토리지 데이터를 제공합니다:", error);
+            return getLocalLeaderboard();
+        }
+    }
+    else {
+        return getLocalLeaderboard().sort((a, b) => b.score - a.score);
+    }
+}
+export function isUsingFirebase() {
+    return isFirebaseConfigured && db !== null;
+}
+export function subscribeToLeaderboard(callback) {
+    if (isFirebaseConfigured && db) {
+        const path = "leaderboard";
+        const q = query(collection(db, path), orderBy("score", "desc"), limit(20));
+        try {
+            const unsubscribe = onSnapshot(q, (querySnapshot) => {
+                const entries = [];
+                querySnapshot.forEach((doc) => {
+                    const data = doc.data();
+                    entries.push({
+                        id: doc.id,
+                        name: data.name || "익명",
+                        score: data.score || 0,
+                        attempts: data.attempts || 0,
+                        accuracy: data.accuracy || 0,
+                        date: data.date || "",
+                    });
+                });
+                if (entries.length === 0) {
+                    callback(getLocalLeaderboard());
+                }
+                else {
+                    callback(entries);
+                }
+            }, (error) => {
+                console.error("Firebase 실시간 구독 에러:", error);
+                callback(getLocalLeaderboard());
+                handleFirestoreError(error, OperationType.GET, path);
+            });
+            return unsubscribe;
+        }
+        catch (error) {
+            console.error("Firebase 실시간 구독 시작 실패:", error);
+            callback(getLocalLeaderboard());
+            return () => { };
+        }
+    }
+    else {
+        // Return sorted local storage mock/actual data and empty unsubscriber
+        callback(getLocalLeaderboard().sort((a, b) => b.score - a.score));
+        return () => { };
+    }
+}
+export async function clearLeaderboard() {
+    // Clear local storage
+    localStorage.setItem(LOCAL_LEADERBOARD_KEY, JSON.stringify([]));
+    if (isFirebaseConfigured && db) {
+        const path = "leaderboard";
+        try {
+            const q = query(collection(db, path));
+            const querySnapshot = await getDocs(q);
+            const deletePromises = [];
+            querySnapshot.forEach((document) => {
+                deletePromises.push(deleteDoc(doc(db, path, document.id)));
+            });
+            await Promise.all(deletePromises);
+            console.log("Firebase Firestore 랭킹이 성공적으로 초기화되었습니다.");
+        }
+        catch (error) {
+            console.error("Firebase 랭킹 초기화 실패:", error);
+            throw error;
+        }
+    }
+}
+const BINS = [
+    {
+        category: WasteCategory.GENERAL,
+        color: "border-b-4 border-slate-400 text-slate-700",
+        bgColor: "bg-white",
+        hoverBg: "hover:bg-slate-50",
+        darkBg: "bg-slate-900 border-b-4 border-slate-700 text-slate-300",
+        icon: Trash2,
+        examples: "깨진 유리, 칫솔, 휴지, 양파 껍질, 영수증, 달걀 껍데기",
+        emoji: "🗑️",
+    },
+    {
+        category: WasteCategory.FOOD,
+        color: "border-b-4 border-amber-400 text-amber-800",
+        bgColor: "bg-white",
+        hoverBg: "hover:bg-amber-50",
+        darkBg: "bg-amber-950/20 border-b-4 border-amber-900 text-amber-200",
+        icon: Apple,
+        examples: "바나나 껍질, 수박 껍질 (동물 사료 가능)",
+        emoji: "🍏",
+    },
+    {
+        category: WasteCategory.VINYL,
+        color: "border-b-4 border-slate-300 text-violet-700",
+        bgColor: "bg-white",
+        hoverBg: "hover:bg-slate-50",
+        darkBg: "bg-violet-950/20 border-b-4 border-violet-900 text-violet-200",
+        icon: Layers,
+        examples: "과자 봉지, 뽁뽁이, 깨끗한 비닐팩",
+        emoji: "🛍️",
+    },
+    {
+        category: WasteCategory.PLASTIC,
+        color: "border-b-4 border-blue-400 text-blue-700",
+        bgColor: "bg-white",
+        hoverBg: "hover:bg-blue-50",
+        darkBg: "bg-blue-950/20 border-b-4 border-blue-900 text-blue-200",
+        icon: GlassWater,
+        examples: "깨끗한 생수병, 일회용 컵, 샴푸 용기(본체)",
+        emoji: "🧴",
+    },
+    {
+        category: WasteCategory.CAN,
+        color: "border-b-4 border-orange-400 text-orange-700",
+        bgColor: "bg-white",
+        hoverBg: "hover:bg-orange-50",
+        darkBg: "bg-cyan-950/20 border-b-4 border-cyan-900 text-cyan-200",
+        icon: Package,
+        examples: "통조림캔, 음료수캔, 부탄가스 용기(구멍)",
+        emoji: "🥫",
+    },
+    {
+        category: WasteCategory.PAPER,
+        color: "border-b-4 border-sky-400 text-amber-950",
+        bgColor: "bg-white",
+        hoverBg: "hover:bg-sky-50",
+        darkBg: "bg-yellow-950/20 border-b-4 border-yellow-900 text-yellow-200",
+        icon: FileText,
+        examples: "전단지, 상자, 신문, 종이컵(행군 것)",
+        emoji: "📦",
+    },
+    {
+        category: WasteCategory.GLASS,
+        color: "border-b-4 border-emerald-400 text-emerald-800",
+        bgColor: "bg-white",
+        hoverBg: "hover:bg-emerald-50",
+        darkBg: "bg-emerald-950/20 border-b-4 border-emerald-900 text-emerald-200",
+        icon: Wine,
+        examples: "음료수병, 맥주병, 소주병 (안 깨진 것)",
+        emoji: "🍾",
+    },
+    {
+        category: WasteCategory.OTHER,
+        color: "border-b-4 border-rose-400 text-rose-700",
+        bgColor: "bg-white",
+        hoverBg: "hover:bg-rose-50",
+        darkBg: "bg-rose-950/20 border-b-4 border-rose-900 text-rose-200",
+        icon: BatteryCharging,
+        examples: "건전지, 헌옷, 폐의약품, 형광등(전용수거)",
+        emoji: "🔋",
+    },
+    {
+        category: WasteCategory.LARGE,
+        color: "border-b-4 border-indigo-600 text-indigo-800",
+        bgColor: "bg-white",
+        hoverBg: "hover:bg-indigo-50",
+        darkBg: "bg-indigo-950/20 border-b-4 border-indigo-900 text-indigo-200",
+        icon: Truck,
+        examples: "폐자전거, 소파, 침대 매트리스, 대형 가구",
+        emoji: "🛋️",
+    },
+];
+function BinGrid({ onBinSelect, activeSelectedId, hoveredBin }) {
+    return (React.createElement("div", { className: "space-y-3" },
+        React.createElement("div", { className: "flex items-center justify-between" },
+            React.createElement("h3", { className: "text-sm font-bold text-slate-600 dark:text-slate-400" }, "\uD83D\uDCE5 \uBD84\uB9AC\uC218\uAC70\uD568 \uC601\uC5ED"),
+            activeSelectedId && (React.createElement("span", { className: "text-xs font-semibold px-2.5 py-1 text-emerald-700 bg-emerald-50 dark:text-emerald-300 dark:bg-emerald-950/50 rounded-full animate-pulse" }, "\uD83D\uDC46 \uC4F0\uB808\uAE30 \uC120\uD0DD\uB428 - \uC544\uB798\uC758 \uC54C\uB9DE\uC740 \uC218\uAC70\uD568\uC744 \uD074\uB9AD\uD558\uC5EC \uBD84\uB9AC\uC218\uAC70 \uD558\uC138\uC694!"))),
+        React.createElement("div", { className: "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3" }, BINS.map((bin) => {
+            const Icon = bin.icon;
+            const isHovered = hoveredBin === bin.category;
+            return (React.createElement(motion.div, { key: bin.category, "data-category": bin.category, onClick: () => onBinSelect && onBinSelect(bin.category), whileHover: { scale: 1.03, y: -3 }, whileTap: { scale: 0.97 }, className: `
+                relative p-4 rounded-2xl border transition-all cursor-pointer flex flex-col items-center justify-center text-center gap-2 overflow-hidden shadow-xs min-h-[130px]
+                ${bin.bgColor} ${bin.color} ${bin.hoverBg}
+                ${isHovered ? "ring-4 ring-emerald-500 scale-103 shadow-md border-transparent" : ""}
+                ${activeSelectedId ? "hover:ring-2 hover:ring-emerald-300" : ""}
+              `, id: `bin-${bin.category.replace(/\s+/g, "-")}` },
+                React.createElement("div", { className: "absolute right-2 bottom-1 opacity-5 pointer-events-none" },
+                    React.createElement(Icon, { size: 50 })),
+                React.createElement("span", { className: "text-3.5xl filter drop-shadow-xs select-none pointer-events-none" }, bin.emoji),
+                React.createElement("div", { className: "z-10" },
+                    React.createElement("h4", { className: "font-extrabold text-xs sm:text-sm leading-tight text-slate-800 tracking-tight" }, bin.category.includes("재활용") ? (React.createElement(React.Fragment, null,
+                        bin.category.split("재활용")[0],
+                        "\uC7AC\uD65C\uC6A9",
+                        React.createElement("br", null),
+                        bin.category.split("재활용")[1]?.trim())) : (bin.category))),
+                React.createElement("div", { className: "text-[9px] text-slate-400 font-medium line-clamp-1 opacity-80 mt-0.5" }, bin.category === WasteCategory.OTHER ? ("건전지, 형광등, 헌옷 등") : bin.category === WasteCategory.LARGE ? ("폐자전거, 소파, 전자제품 등") : (`${bin.examples.split(",")[0]} 등`))));
+        }))));
+}
+function GameBelt({ activeItems, selectedId, onSelectItem, onDragStart, onDragUpdate, onDragEnd, }) {
+    const containerRef = useRef(null);
+    // Helper to find bin under current pointer position
+    const getBinUnderPointer = (event, clientX, clientY) => {
+        let x = clientX;
+        let y = clientY;
+        if (event) {
+            if (event.touches && event.touches.length > 0) {
+                x = event.touches[0].clientX;
+                y = event.touches[0].clientY;
+            }
+            else if (event.changedTouches && event.changedTouches.length > 0) {
+                x = event.changedTouches[0].clientX;
+                y = event.changedTouches[0].clientY;
+            }
+            else if (event.clientX !== undefined) {
+                x = event.clientX;
+                y = event.clientY;
+            }
+        }
+        if (x === undefined || y === undefined)
+            return null;
+        const elements = document.elementsFromPoint(x, y);
+        for (const el of elements) {
+            const category = el.getAttribute("data-category");
+            if (category) {
+                return category;
+            }
+        }
+        return null;
+    };
+    return (React.createElement("div", { ref: containerRef, className: "relative w-full h-44 bg-slate-800 border-y-4 border-slate-700 rounded-3xl overflow-hidden shadow-inner flex flex-col justify-between" },
+        React.createElement("div", { className: "absolute inset-0 flex flex-col justify-between pointer-events-none opacity-20" },
+            React.createElement("div", { className: "h-2 bg-gradient-to-b from-slate-900 to-transparent" }),
+            React.createElement("div", { className: "absolute inset-x-0 top-1/2 -translate-y-1/2 h-16 flex items-center justify-around overflow-hidden" }, Array.from({ length: 15 }).map((_, i) => (React.createElement(motion.div, { key: i, animate: { x: [0, 60] }, transition: {
+                    repeat: Infinity,
+                    duration: 2,
+                    ease: "linear"
+                }, className: "w-1.5 h-16 bg-slate-600 rounded-full" })))),
+            React.createElement("div", { className: "h-2 bg-gradient-to-t from-slate-900 to-transparent" })),
+        React.createElement("div", { className: "relative px-6 py-2 bg-slate-900/60 border-b border-slate-800 flex items-center justify-between text-xs font-bold text-slate-400 pointer-events-none" },
+            React.createElement("span", { className: "flex items-center gap-1.5" },
+                React.createElement(MoveHorizontal, { size: 14, className: "animate-pulse text-emerald-400" })),
+            React.createElement("span", { className: "text-[10px] bg-slate-800 px-2 py-0.5 rounded-full text-slate-300" }, "\uB4DC\uB798\uADF8\uD558\uAC70\uB098 \uD074\uB9AD\uD558\uC5EC \uC218\uAC70\uD568\uC5D0 \uBD84\uB9AC\uBC30\uCD9C \uD558\uC138\uC694")),
+        React.createElement("div", { className: "relative flex-1 w-full overflow-hidden" },
+            activeItems.map((item, index) => {
+                const isSelected = selectedId === item.activeId;
+                const rotation = index % 2 === 0 ? 2 : -2;
+                return (React.createElement(motion.div, { key: item.activeId, style: {
+                        left: `${item.progress}%`,
+                        position: "absolute",
+                        top: "50%",
+                        y: "-50%",
+                    }, className: "z-10" },
+                    React.createElement(motion.div, { drag: true, dragSnapToOrigin: true, dragElastic: 0.4, onDragStart: () => {
+                            onSelectItem(item.activeId);
+                            onDragStart(item.activeId);
+                        }, onDrag: (event, info) => {
+                            const bin = getBinUnderPointer(event, info.point.x, info.point.y);
+                            onDragUpdate(bin);
+                        }, onDragEnd: (event, info) => {
+                            const bin = getBinUnderPointer(event, info.point.x, info.point.y);
+                            onDragEnd(item.activeId, bin);
+                        }, whileDrag: {
+                            scale: 1.15,
+                            rotate: rotation * 2,
+                            boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.25)"
+                        }, onClick: () => onSelectItem(item.activeId), className: `
+                  relative w-32 h-32 flex flex-col items-center justify-center p-3 rounded-2xl border-2 transition-all cursor-grab active:cursor-grabbing touch-none
+                  bg-white text-slate-800 shadow-xl select-none
+                  ${isSelected ? "border-emerald-400 ring-4 ring-emerald-200 scale-105" : "border-slate-100"}
+                  hover:border-slate-300
+                `, style: {
+                            rotate: isSelected ? 0 : rotation
+                        }, id: `trash-item-${item.activeId}` },
+                        React.createElement("span", { className: `
+                  absolute top-2 right-2 text-[9px] px-1.5 py-0.5 rounded-md font-bold
+                  ${item.difficulty === "쉬움" ? "bg-emerald-50 text-emerald-600" : ""}
+                  ${item.difficulty === "보통" ? "bg-amber-50 text-amber-600" : ""}
+                  ${item.difficulty === "어려움" ? "bg-rose-50 text-rose-600" : ""}
+                ` }, item.difficulty),
+                        React.createElement("div", { className: "text-4xl sm:text-5xl mb-2 filter drop-shadow-sm select-none pointer-events-none" }, item.emoji),
+                        React.createElement("div", { className: "text-sm font-black text-center text-slate-800 tracking-tight leading-tight w-full truncate px-1" }, item.name),
+                        isSelected && (React.createElement("div", { className: "absolute -bottom-1.5 -right-1 bg-emerald-500 text-white rounded-full p-0.5 shadow-xs" },
+                            React.createElement(Sparkles, { size: 10 }))))));
+            }),
+            activeItems.length === 0 && (React.createElement("div", { className: "absolute inset-0 flex items-center justify-center text-slate-400 font-medium text-sm" }, "\uC4F0\uB808\uAE30\uAC00 \uC2A4\uD3F0\uB418\uB294 \uC911..."))),
+        React.createElement("div", { className: "h-1.5 w-full bg-slate-900 relative" },
+            React.createElement("div", { className: "absolute inset-y-0 right-0 w-16 bg-gradient-to-l from-rose-500/30 to-transparent flex items-center justify-end pr-2 text-[8px] text-rose-400 font-bold tracking-wider pointer-events-none" }, "\uB099\uD558 \uC704\uD5D8!"))));
+}
+function HistoryLog({ logs }) {
+    return (React.createElement("div", { className: "bg-white/70 backdrop-blur-md rounded-2xl border border-white p-4 flex flex-col h-[320px] shadow-xs" },
+        React.createElement("div", { className: "flex items-center justify-between mb-3 border-b border-slate-100 pb-2 flex-shrink-0" },
+            React.createElement("div", { className: "flex items-center gap-1.5" },
+                React.createElement(BookOpen, { size: 15, className: "text-emerald-500" }),
+                React.createElement("h3", { className: "font-extrabold text-xs text-slate-800 tracking-tight uppercase" }, "\uC2E4\uC2DC\uAC04 \uBC30\uCD9C \uD53C\uB4DC\uBC31")),
+            React.createElement("span", { className: "text-[10px] text-slate-400 font-mono" },
+                "\uCD1D ",
+                logs.length,
+                "\uAC74")),
+        React.createElement("div", { className: "flex-1 overflow-y-auto pr-0.5 space-y-2.5 custom-scrollbar" },
+            React.createElement(AnimatePresence, { initial: false }, logs.map((log) => {
+                const isMiss = log.scoreChange === -20;
+                return (React.createElement(motion.div, { key: log.id, initial: { opacity: 0, y: -10, scale: 0.95 }, animate: { opacity: 1, y: 0, scale: 1 }, exit: { opacity: 0 }, transition: { duration: 0.2 }, className: `
+                  p-2.5 rounded-xl border flex flex-col gap-1.5 transition-all shadow-xs
+                  ${log.isCorrect
+                        ? "bg-emerald-50 border-emerald-100"
+                        : isMiss
+                            ? "bg-slate-50 border-slate-200"
+                            : "bg-rose-50 border-rose-100"}
+                ` },
+                    React.createElement("div", { className: "flex items-center justify-between gap-2" },
+                        React.createElement("div", { className: "flex items-center gap-2" },
+                            React.createElement("span", { className: "text-2xl filter drop-shadow-xs" }, log.emoji),
+                            React.createElement("div", { className: "min-w-0" },
+                                React.createElement("span", { className: `font-extrabold text-xs block truncate ${log.isCorrect ? "text-emerald-800" : isMiss ? "text-slate-800" : "text-rose-800"}` }, log.itemName),
+                                React.createElement("span", { className: `text-[10px] block truncate ${log.isCorrect ? "text-emerald-600" : isMiss ? "text-slate-500" : "text-rose-600"}` }, isMiss
+                                    ? "낙하 오답"
+                                    : `${log.selectedCategory} -> ${log.isCorrect ? "성공" : "실패"}`))),
+                        React.createElement("div", { className: "flex items-center gap-1.5 flex-shrink-0" },
+                            React.createElement("span", { className: `
+                      text-[11px] font-black tracking-tight px-2 py-0.5 rounded-full
+                      ${log.isCorrect
+                                    ? "text-emerald-700 bg-emerald-100/50"
+                                    : isMiss
+                                        ? "text-slate-700 bg-slate-200"
+                                        : "text-rose-700 bg-rose-100/50"}
+                    ` }, log.scoreChange > 0 ? `+${log.scoreChange}` : log.scoreChange))),
+                    React.createElement("div", { className: "text-[10px] leading-snug text-slate-600 bg-white/80 p-2 rounded-lg border border-slate-100 font-medium" },
+                        "\uD83D\uDCA1 ",
+                        React.createElement("span", { className: "font-bold text-slate-800" }, "\uD301:"),
+                        " ",
+                        log.tip)));
+            })),
+            logs.length === 0 && (React.createElement("div", { className: "h-full flex flex-col items-center justify-center text-center p-4 text-slate-400 space-y-1" },
+                React.createElement(BookOpen, { size: 24, className: "opacity-30 mb-2 animate-bounce text-slate-400" }),
+                React.createElement("p", { className: "font-bold text-xs text-slate-500" }, "\uBC30\uCD9C \uD788\uC2A4\uD1A0\uB9AC\uAC00 \uBE44\uC5B4 \uC788\uC2B5\uB2C8\uB2E4"),
+                React.createElement("p", { className: "text-[9px] leading-relaxed text-slate-400" }, "\uBCA8\uD2B8 \uC704\uC758 \uC4F0\uB808\uAE30\uB97C \uB04C\uC5B4 \uC54C\uB9DE\uC740 \uC218\uAC70\uD568\uC5D0 \uC62C\uBC14\uB974\uAC8C \uBD84\uB9AC\uBC30\uCD9C \uD558\uC138\uC694!"))))));
+}
+function Leaderboard({ refreshTrigger }) {
+    const [entries, setEntries] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [firebaseActive, setFirebaseActive] = useState(false);
+    const [refreshCounter, setRefreshCounter] = useState(0);
+    // States for Teacher-Only Reset Custom Modal
+    const [showResetModal, setShowResetModal] = useState(false);
+    const [password, setPassword] = useState("");
+    const [confirmStep, setConfirmStep] = useState(false); // Step 1: Password, Step 2: Confirmation
+    const [resetError, setResetError] = useState("");
+    const [resetSuccess, setResetSuccess] = useState(false);
+    const [resetting, setResetting] = useState(false);
+    const handleRefresh = () => {
+        setRefreshCounter((prev) => prev + 1);
+    };
+    const handleOpenReset = () => {
+        setPassword("");
+        setResetError("");
+        setResetSuccess(false);
+        setConfirmStep(false);
+        setResetting(false);
+        setShowResetModal(true);
+    };
+    const handlePasswordSubmit = (e) => {
+        e.preventDefault();
+        if (password === "1234") {
+            setResetError("");
+            setConfirmStep(true);
+        }
+        else {
+            setResetError("비밀번호가 일치하지 않습니다. (기본: 1234)");
+        }
+    };
+    const handleExecuteReset = async () => {
+        setResetting(true);
+        setResetError("");
+        try {
+            await clearLeaderboard();
+            setResetSuccess(true);
+            setTimeout(() => {
+                setShowResetModal(false);
+                handleRefresh();
+            }, 1500);
+        }
+        catch (e) {
+            setResetError("랭킹 초기화 중 에러가 발생했습니다.");
+        }
+        finally {
+            setResetting(false);
+        }
+    };
+    useEffect(() => {
+        setLoading(true);
+        const unsubscribe = subscribeToLeaderboard((data) => {
+            setEntries(data);
+            setFirebaseActive(isUsingFirebase());
+            setLoading(false);
+        });
+        return () => {
+            unsubscribe();
+        };
+    }, [refreshTrigger, refreshCounter]);
+    return (React.createElement("div", { className: "bg-slate-800 text-white rounded-2xl p-5 flex flex-col h-full min-h-[400px] shadow-lg shadow-slate-300/30 border-0 relative" },
+        React.createElement("div", { className: "flex items-center justify-between border-b border-slate-700 pb-4 mb-4 flex-shrink-0" },
+            React.createElement("div", { className: "flex items-center gap-2" },
+                React.createElement(Trophy, { className: "text-amber-400 animate-pulse", size: 18 }),
+                React.createElement("div", null,
+                    React.createElement("h3", { className: "font-extrabold text-xs uppercase tracking-wider text-slate-100" }, "\uC2E4\uC2DC\uAC04 \uAE00\uB85C\uBC8C \uB7AD\uD0B9"),
+                    React.createElement("p", { className: "text-[10px] text-slate-400" }, "\uCD5C\uACE0 \uC810\uC218\uB97C \uAC31\uC2E0\uD574 \uBCF4\uC138\uC694!"))),
+            React.createElement("div", { className: "flex items-center gap-1.5" },
+                React.createElement("div", { className: `flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded-full ${firebaseActive
+                        ? "bg-emerald-500/20 text-emerald-300"
+                        : "bg-slate-700 text-slate-400"}` },
+                    React.createElement(Globe, { size: 10, className: firebaseActive ? "animate-spin" : "" }),
+                    React.createElement("span", null, firebaseActive ? "실시간" : "로컬")),
+                React.createElement("button", { onClick: handleRefresh, type: "button", className: "p-1 rounded-lg hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition-all active:scale-95 cursor-pointer", title: "\uC0C8\uB85C\uACE0\uCE68" },
+                    React.createElement(RefreshCw, { size: 12, className: loading ? "animate-spin" : "" })),
+                React.createElement("button", { onClick: handleOpenReset, type: "button", className: "p-1 rounded-lg hover:bg-rose-950/40 text-rose-400/80 hover:text-rose-400 transition-all active:scale-95 flex items-center gap-0.5 ml-0.5 border border-rose-500/20 cursor-pointer", title: "\uAD50\uC0AC\uC6A9 \uB7AD\uD0B9 \uCD08\uAE30\uD654 (\uBE44\uBC00\uBC88\uD638: 1234)" },
+                    React.createElement(Trash2, { size: 11 }),
+                    React.createElement("span", { className: "text-[9px] font-semibold" }, "\uCD08\uAE30\uD654")))),
+        React.createElement("div", { className: "flex-1 overflow-y-auto pr-1 space-y-2 custom-scrollbar" }, loading ? (React.createElement("div", { className: "h-full flex items-center justify-center py-12" },
+            React.createElement(RefreshCw, { className: "animate-spin text-emerald-400 w-6 h-6" }))) : entries.length > 0 ? (React.createElement("div", { className: "space-y-2" },
+            React.createElement("div", { className: "grid grid-cols-12 px-2 py-1 text-[9px] font-bold text-slate-400 uppercase tracking-wider" },
+                React.createElement("span", { className: "col-span-2 text-center" }, "\uC21C\uC704"),
+                React.createElement("span", { className: "col-span-4" }, "\uD50C\uB808\uC774\uC5B4"),
+                React.createElement("span", { className: "col-span-2 text-right" }, "\uC810\uC218"),
+                React.createElement("span", { className: "col-span-2 text-right" }, "\uBC30\uCD9C"),
+                React.createElement("span", { className: "col-span-2 text-right" }, "\uC815\uD655\uB3C4")),
+            entries.map((entry, index) => {
+                const rank = index + 1;
+                const isTop3 = rank <= 3;
+                return (React.createElement(motion.div, { key: entry.id || `${entry.name}-${index}`, initial: { opacity: 0, x: -10 }, animate: { opacity: 1, x: 0 }, transition: { delay: index * 0.05, duration: 0.2 }, className: `
+                    grid grid-cols-12 items-center px-2 py-2.5 rounded-xl border transition-all text-[11px] font-semibold
+                    ${isTop3
+                        ? rank === 1
+                            ? "bg-slate-700/50 border-amber-500/50 text-slate-100"
+                            : rank === 2
+                                ? "bg-slate-700/40 border-slate-600 text-slate-200"
+                                : "bg-slate-700/30 border-amber-700/40 text-slate-200"
+                        : "bg-slate-800/50 border-slate-700/40 text-slate-300 hover:bg-slate-700/30"}
+                  ` },
+                    React.createElement("span", { className: "col-span-2 text-center flex items-center justify-center font-mono" }, rank === 1 ? (React.createElement("span", { className: "text-amber-400 font-bold" }, "1")) : rank === 2 ? (React.createElement("span", { className: "text-slate-300 font-bold" }, "2")) : rank === 3 ? (React.createElement("span", { className: "text-amber-700 font-bold" }, "3")) : (React.createElement("span", { className: "text-slate-500" }, rank))),
+                    React.createElement("span", { className: "col-span-4 truncate font-extrabold pr-1 text-slate-100" }, entry.name),
+                    React.createElement("span", { className: "col-span-2 text-right font-black text-emerald-400" }, entry.score),
+                    React.createElement("span", { className: "col-span-2 text-right font-mono text-slate-400" }, entry.attempts),
+                    React.createElement("span", { className: "col-span-2 text-right font-mono text-slate-400" },
+                        entry.accuracy,
+                        "%")));
+            }))) : (React.createElement("div", { className: "h-full flex flex-col items-center justify-center py-12 text-center text-slate-500" },
+            React.createElement(Trophy, { size: 28, className: "opacity-20 mb-2" }),
+            React.createElement("p", { className: "font-bold text-xs text-slate-400" }, "\uB7AD\uD0B9 \uAE30\uB85D\uC774 \uC5C6\uC2B5\uB2C8\uB2E4"),
+            React.createElement("p", { className: "text-[9px] text-slate-500" }, "\uAC8C\uC784\uC744 \uC644\uB8CC\uD558\uC5EC \uCD5C\uCD08\uC758 \uC21C\uC704\uB97C \uB4F1\uB85D\uD558\uC138\uC694!")))),
+        React.createElement("div", { className: "mt-3 pt-3 border-t border-slate-700 text-[9px] leading-normal text-slate-400 flex items-start gap-1 flex-shrink-0" },
+            React.createElement(HelpCircle, { size: 12, className: "text-slate-500 mt-0.5 flex-shrink-0" }),
+            React.createElement("p", null,
+                React.createElement("strong", null, "\uC548\uB0B4:"),
+                " \uC2E4\uC2DC\uAC04 \uD30C\uC774\uC5B4\uBCA0\uC774\uC2A4 \uAE00\uB85C\uBC8C DB\uB85C \uC5F0\uB3D9\uD558\uB824\uBA74 ",
+                React.createElement("code", null, "/src/firebase.ts"),
+                " \uC790\uACA9 \uC99D\uBA85\uC744 \uC791\uC131\uD574 \uC8FC\uC2DC\uBA74 \uC2E4\uC2DC\uAC04 \uBAA8\uB4DC\uB85C \uC804\uD658\uB429\uB2C8\uB2E4.")),
+        showResetModal && (React.createElement("div", { className: "absolute inset-0 bg-slate-900/95 backdrop-blur-md z-50 flex flex-col items-center justify-center p-6 rounded-2xl" },
+            React.createElement("button", { onClick: () => setShowResetModal(false), className: "absolute top-4 right-4 text-slate-400 hover:text-white transition-colors cursor-pointer" },
+                React.createElement(X, { size: 18 })),
+            !confirmStep ? (React.createElement("form", { onSubmit: handlePasswordSubmit, className: "w-full max-w-xs space-y-4 text-center" },
+                React.createElement("div", { className: "inline-flex p-3 bg-rose-500/10 rounded-full text-rose-400 mb-2" },
+                    React.createElement(Lock, { size: 24 })),
+                React.createElement("div", null,
+                    React.createElement("h4", { className: "text-sm font-bold text-slate-100" }, "\uAD50\uC0AC \uC804\uC6A9 \uB7AD\uD0B9 \uCD08\uAE30\uD654"),
+                    React.createElement("p", { className: "text-[10px] text-slate-400 mt-1" }, "\uB7AD\uD0B9 \uB370\uC774\uD130\uB97C \uCD08\uAE30\uD654\uD558\uB824\uBA74 \uBE44\uBC00\uBC88\uD638\uB97C \uC785\uB825\uD558\uC138\uC694.")),
+                React.createElement("div", { className: "space-y-1 text-left" },
+                    React.createElement("input", { type: "password", placeholder: "\uBE44\uBC00\uBC88\uD638 \uC785\uB825 (\uAE30\uBCF8: 1234)", value: password, onChange: (e) => setPassword(e.target.value), className: "w-full bg-slate-950/50 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-500/80 text-center font-mono", autoFocus: true }),
+                    resetError && (React.createElement("p", { className: "text-[10px] text-rose-400 text-center font-medium mt-1" }, resetError))),
+                React.createElement("div", { className: "flex gap-2 pt-2" },
+                    React.createElement("button", { type: "button", onClick: () => setShowResetModal(false), className: "flex-1 py-2 bg-slate-700 hover:bg-slate-600 rounded-xl text-[11px] font-bold transition-all cursor-pointer" }, "\uCDE8\uC18C"),
+                    React.createElement("button", { type: "submit", className: "flex-1 py-2 bg-rose-500 hover:bg-rose-600 active:scale-95 text-[11px] font-bold rounded-xl transition-all cursor-pointer" }, "\uD655\uC778")))) : (React.createElement("div", { className: "w-full max-w-xs space-y-4 text-center" },
+                React.createElement("div", { className: "inline-flex p-3 bg-amber-500/10 rounded-full text-amber-400 mb-2 animate-bounce" },
+                    React.createElement(Trash2, { size: 24 })),
+                React.createElement("div", null,
+                    React.createElement("h4", { className: "text-sm font-bold text-slate-100" }, "\uC815\uB9D0\uB85C \uCD08\uAE30\uD654\uD558\uC2DC\uACA0\uC2B5\uB2C8\uAE4C?"),
+                    React.createElement("p", { className: "text-[10px] text-slate-400 mt-1" }, "\uBAA8\uB4E0 \uC2E4\uC2DC\uAC04 \uB7AD\uD0B9 \uB370\uC774\uD130\uAC00 \uC601\uAD6C\uC801\uC73C\uB85C \uC0AD\uC81C\uB418\uBA70, \uC774 \uC791\uC5C5\uC740 \uB418\uB3CC\uB9B4 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.")),
+                resetError && (React.createElement("p", { className: "text-[10px] text-rose-400 font-medium" }, resetError)),
+                resetSuccess ? (React.createElement("p", { className: "text-xs font-bold text-emerald-400 bg-emerald-500/10 py-2 rounded-xl" }, "\u2713 \uC815\uC0C1\uC801\uC73C\uB85C \uCD08\uAE30\uD654\uB418\uC5C8\uC2B5\uB2C8\uB2E4!")) : (React.createElement("div", { className: "flex gap-2 pt-2" },
+                    React.createElement("button", { onClick: () => setConfirmStep(false), disabled: resetting, className: "flex-1 py-2 bg-slate-700 hover:bg-slate-600 rounded-xl text-[11px] font-bold transition-all disabled:opacity-50 cursor-pointer" }, "\uC774\uC804\uC73C\uB85C"),
+                    React.createElement("button", { onClick: handleExecuteReset, disabled: resetting, className: "flex-1 py-2 bg-rose-500 hover:bg-rose-600 active:scale-95 text-[11px] font-bold rounded-xl transition-all disabled:opacity-50 flex items-center justify-center gap-1 cursor-pointer" }, resetting ? "초기화 중..." : "최종 초기화")))))))));
+}
+function NicknameModal({ onStartGame }) {
+    const [step, setStep] = useState("nickname");
+    const [name, setName] = useState("");
+    const [error, setError] = useState("");
+    const [selectedDifficulty, setSelectedDifficulty] = useState("medium");
+    const [showLeaderboard, setShowLeaderboard] = useState(false);
+    const handleNicknameSubmit = (e) => {
+        e.preventDefault();
+        let trimmedName = name.trim();
+        if (!trimmedName) {
+            trimmedName = "지구수호자";
+            setName("지구수호자");
+        }
+        if (trimmedName.length > 10) {
+            setError("이름은 10자 이내로 입력해 주세요.");
+            return;
+        }
+        setStep("difficulty");
+    };
+    const handleStart = () => {
+        const finalName = name.trim() || "지구수호자";
+        onStartGame(finalName, selectedDifficulty);
+    };
+    return (React.createElement("div", { className: "fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm" },
+        React.createElement(motion.div, { initial: { opacity: 0, scale: 0.9, y: 20 }, animate: { opacity: 1, scale: 1, y: 0 }, transition: { type: "spring", duration: 0.5 }, className: "w-full max-w-md overflow-hidden bg-white rounded-3xl shadow-2xl border border-slate-100" },
+            React.createElement("div", { className: "relative p-8 text-center text-white bg-slate-800" },
+                React.createElement("div", { className: "absolute top-3 right-3 opacity-10" },
+                    React.createElement(Trash2, { size: 120 })),
+                React.createElement(motion.div, { initial: { rotate: -10, scale: 0.8 }, animate: { rotate: 0, scale: 1 }, transition: { delay: 0.2, type: "spring" }, className: "inline-flex items-center justify-center w-16 h-16 mb-4 bg-emerald-500 rounded-2xl" },
+                    React.createElement("span", { className: "text-3xl" }, "\u267B\uFE0F")),
+                React.createElement("h1", { className: "text-2xl font-black tracking-tight mb-1 text-slate-100" }, "\uC790\uC6D0 \uB9C8\uC2A4\uD130: \uBD84\uB9AC\uBC30\uCD9C \uCC4C\uB9B0\uC9C0"),
+                React.createElement("p", { className: "text-slate-400 text-xs font-medium" }, step === "nickname" ? "이름을 입력하고 분리배출 왕이 되어보세요!" : "원하는 게임 난이도를 선택해 주세요!")),
+            React.createElement("div", { className: "p-8" },
+                React.createElement(AnimatePresence, { mode: "wait" }, step === "nickname" ? (React.createElement(motion.form, { key: "nickname-step", initial: { opacity: 0, x: -20 }, animate: { opacity: 1, x: 0 }, exit: { opacity: 0, x: 20 }, onSubmit: handleNicknameSubmit, className: "space-y-5" },
+                    React.createElement("div", { className: "space-y-2" },
+                        React.createElement("label", { htmlFor: "nickname", className: "block text-xs font-bold uppercase tracking-wider text-slate-500" }, "\uD50C\uB808\uC774\uC5B4 \uB2C9\uB124\uC784"),
+                        React.createElement("div", { className: "relative" },
+                            React.createElement("input", { id: "nickname", type: "text", value: name, onChange: (e) => {
+                                    setName(e.target.value);
+                                    setError("");
+                                }, maxLength: 10, placeholder: "\uC9C0\uAD6C\uC218\uD638\uC790", className: "w-full px-5 py-4 text-base font-bold transition-all bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 focus:bg-white text-slate-800", autoFocus: true }),
+                            React.createElement("span", { className: "absolute right-4 top-1/2 -translate-y-1/2 text-xs text-slate-400 font-mono" },
+                                name.length,
+                                "/10")),
+                        error && (React.createElement(motion.div, { initial: { opacity: 0, y: -5 }, animate: { opacity: 1, y: 0 }, className: "flex items-center gap-1.5 text-rose-600 text-xs font-semibold" },
+                            React.createElement(AlertCircle, { size: 14 }),
+                            React.createElement("span", null, error)))),
+                    React.createElement("div", { className: "p-4 bg-emerald-50/50 border border-emerald-100/80 rounded-2xl text-emerald-800 text-[11px] leading-relaxed space-y-1.5" },
+                        React.createElement("div", { className: "flex items-center gap-1 font-bold text-emerald-900 text-xs" },
+                            React.createElement(Award, { size: 14 }),
+                            React.createElement("span", null, "\uD575\uC2EC \uAC8C\uC784 \uBC29\uBC95")),
+                        React.createElement("p", null,
+                            "\u23F1\uFE0F ",
+                            React.createElement("strong", null, "\uC81C\uD55C\uC2DC\uAC04 60\uCD08"),
+                            " \uB3D9\uC548 \uBCA8\uD2B8\uB97C \uD0C0\uACE0 \uC624\uB294 \uC4F0\uB808\uAE30\uB97C \uC54C\uB9DE\uC740 \uC218\uAC70\uD568\uC73C\uB85C ",
+                            React.createElement("strong", null, "\uB4DC\uB798\uADF8&\uB4DC\uB86D"),
+                            "\uD558\uC138\uC694. (\uD074\uB9AD \uBC30\uCD9C\uB3C4 \uC9C0\uC6D0)"),
+                        React.createElement("p", null,
+                            "\u2714\uFE0F \uC815\uB2F5 \uC218\uAC70: ",
+                            React.createElement("strong", null, "+60\uC810"),
+                            " | \u274C \uC624\uB2F5: ",
+                            React.createElement("strong", null, "-30\uC810"),
+                            " | \uD83D\uDEA8 \uBBF8\uCC98\uB9AC \uC774\uD0C8: ",
+                            React.createElement("strong", null, "-20\uC810")),
+                        React.createElement("p", null,
+                            "\uD83D\uDD25 ",
+                            React.createElement("strong", null, "10\uC5F0\uC18D \uC815\uB2F5 \uC131\uACF5 \uC2DC"),
+                            " \uCF64\uBCF4 \uBCF4\uB108\uC2A4 ",
+                            React.createElement("strong", null, "+30\uC810"),
+                            " \uCD94\uAC00 \uD68D\uB4DD!")),
+                    React.createElement("button", { type: "submit", className: "w-full py-4 text-base font-bold text-white transition-all bg-emerald-500 rounded-2xl hover:bg-emerald-600 active:scale-98 shadow-lg shadow-emerald-200 flex items-center justify-center gap-2 cursor-pointer" },
+                        "\uB2E4\uC74C \uB2E8\uACC4\uB85C",
+                        React.createElement(Sparkles, { size: 16, className: "animate-pulse" })),
+                    React.createElement("button", { type: "button", onClick: () => setShowLeaderboard(true), className: "w-full py-3 text-xs font-bold text-slate-600 hover:text-slate-900 border border-slate-200 rounded-2xl hover:bg-slate-50 transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-sm hover:shadow active:scale-99" },
+                        React.createElement(Trophy, { size: 14, className: "text-amber-500 animate-pulse" }),
+                        "\uC2E4\uC2DC\uAC04 \uB7AD\uD0B9 \uD655\uC778"))) : (React.createElement(motion.div, { key: "difficulty-step", initial: { opacity: 0, x: 20 }, animate: { opacity: 1, x: 0 }, exit: { opacity: 0, x: -20 }, className: "space-y-6" },
+                    React.createElement("div", { className: "space-y-3" },
+                        React.createElement("span", { className: "block text-xs font-bold uppercase tracking-wider text-slate-500" }, "\uB09C\uC774\uB3C4 \uC120\uD0DD"),
+                        React.createElement("div", { className: "space-y-3" },
+                            React.createElement("button", { type: "button", onClick: () => setSelectedDifficulty("easy"), className: `w-full p-3 flex items-center justify-between rounded-2xl border-2 text-left transition-all cursor-pointer ${selectedDifficulty === "easy"
+                                    ? "border-emerald-500 bg-emerald-50/40"
+                                    : "border-slate-200 hover:border-slate-300 hover:bg-slate-50/50"}` },
+                                React.createElement("div", { className: "flex items-start gap-3" },
+                                    React.createElement("span", { className: "text-2xl mt-0.5" }, "\uD83D\uDC76"),
+                                    React.createElement("div", null,
+                                        React.createElement("h3", { className: "font-bold text-slate-800 text-xs sm:text-sm" }, "\uC26C\uC6C0 (Easy)"),
+                                        React.createElement("p", { className: "text-[11px] text-slate-500 mt-0.5" }, "\uC4F0\uB808\uAE30 \uC18D\uB3C4 80% \u2022 \uCD08\uBCF4\uC790 \uCD94\uCC9C"))),
+                                selectedDifficulty === "easy" && (React.createElement("div", { className: "w-5 h-5 rounded-full bg-emerald-500 flex items-center justify-center text-white" },
+                                    React.createElement(Check, { size: 12, strokeWidth: 3 })))),
+                            React.createElement("button", { type: "button", onClick: () => setSelectedDifficulty("medium"), className: `w-full p-3 flex items-center justify-between rounded-2xl border-2 text-left transition-all cursor-pointer ${selectedDifficulty === "medium"
+                                    ? "border-emerald-500 bg-emerald-50/40"
+                                    : "border-slate-200 hover:border-slate-300 hover:bg-slate-50/50"}` },
+                                React.createElement("div", { className: "flex items-start gap-3" },
+                                    React.createElement("span", { className: "text-2xl mt-0.5" }, "\uD83D\uDE80"),
+                                    React.createElement("div", null,
+                                        React.createElement("h3", { className: "font-bold text-slate-800 text-xs sm:text-sm" }, "\uBCF4\uD1B5 (Normal)"),
+                                        React.createElement("p", { className: "text-[11px] text-slate-500 mt-0.5" }, "\uC4F0\uB808\uAE30 \uC18D\uB3C4 100% \u2022 \uAE30\uBCF8 \uBC38\uB7F0\uC2A4"))),
+                                selectedDifficulty === "medium" && (React.createElement("div", { className: "w-5 h-5 rounded-full bg-emerald-500 flex items-center justify-center text-white" },
+                                    React.createElement(Check, { size: 12, strokeWidth: 3 })))),
+                            React.createElement("button", { type: "button", onClick: () => setSelectedDifficulty("hard"), className: `w-full p-3 flex items-center justify-between rounded-2xl border-2 text-left transition-all cursor-pointer ${selectedDifficulty === "hard"
+                                    ? "border-emerald-500 bg-emerald-50/40"
+                                    : "border-slate-200 hover:border-slate-300 hover:bg-slate-50/50"}` },
+                                React.createElement("div", { className: "flex items-start gap-3" },
+                                    React.createElement("span", { className: "text-2xl mt-0.5" }, "\u26A1"),
+                                    React.createElement("div", null,
+                                        React.createElement("h3", { className: "font-bold text-slate-800 text-xs sm:text-sm" }, "\uC5B4\uB824\uC6C0 (Hard)"),
+                                        React.createElement("p", { className: "text-[11px] text-slate-500 mt-0.5" }, "\uC4F0\uB808\uAE30 \uC18D\uB3C4 140% \u2022 \uD55C\uACC4 \uB3CC\uD30C!"))),
+                                selectedDifficulty === "hard" && (React.createElement("div", { className: "w-5 h-5 rounded-full bg-emerald-500 flex items-center justify-center text-white" },
+                                    React.createElement(Check, { size: 12, strokeWidth: 3 })))),
+                            React.createElement("button", { type: "button", onClick: () => setSelectedDifficulty("very_hard"), className: `w-full p-3 flex items-center justify-between rounded-2xl border-2 text-left transition-all cursor-pointer ${selectedDifficulty === "very_hard"
+                                    ? "border-emerald-500 bg-emerald-50/40"
+                                    : "border-slate-200 hover:border-slate-300 hover:bg-slate-50/50"}` },
+                                React.createElement("div", { className: "flex items-start gap-3" },
+                                    React.createElement("span", { className: "text-2xl mt-0.5" }, "\uD83D\uDC80"),
+                                    React.createElement("div", null,
+                                        React.createElement("h3", { className: "font-bold text-slate-800 text-xs sm:text-sm" }, "\uB9E4\uC6B0 \uC5B4\uB824\uC6C0 (Very Hard)"),
+                                        React.createElement("p", { className: "text-[11px] text-slate-500 mt-0.5" }, "\uC4F0\uB808\uAE30 \uC18D\uB3C4 200% \u2022 \uCD08\uACE0\uC218 \uC804\uC6A9!"))),
+                                selectedDifficulty === "very_hard" && (React.createElement("div", { className: "w-5 h-5 rounded-full bg-emerald-500 flex items-center justify-center text-white" },
+                                    React.createElement(Check, { size: 12, strokeWidth: 3 })))))),
+                    React.createElement("div", { className: "flex gap-3" },
+                        React.createElement("button", { type: "button", onClick: () => setStep("nickname"), className: "flex items-center justify-center gap-1.5 px-4 py-4 border-2 border-slate-200 rounded-2xl text-slate-600 hover:bg-slate-50 font-bold text-sm transition-all cursor-pointer active:scale-95" },
+                            React.createElement(ChevronLeft, { size: 16 }),
+                            "\uC774\uC804"),
+                        React.createElement("button", { type: "button", onClick: handleStart, className: "flex-1 py-4 text-base font-bold text-white transition-all bg-emerald-500 rounded-2xl hover:bg-emerald-600 active:scale-98 shadow-lg shadow-emerald-200 flex items-center justify-center gap-2 cursor-pointer" },
+                            "\uAC8C\uC784 \uC2DC\uC791\uD558\uAE30",
+                            React.createElement(Gamepad2, { size: 16 })))))))),
+        React.createElement(AnimatePresence, null, showLeaderboard && (React.createElement("div", { className: "fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm" },
+            React.createElement(motion.div, { initial: { scale: 0.95, y: 15, opacity: 0 }, animate: { scale: 1, y: 0, opacity: 1 }, exit: { scale: 0.95, y: 15, opacity: 0 }, className: "w-full max-w-lg bg-slate-800 text-white rounded-3xl shadow-2xl overflow-hidden relative border border-slate-700/50 flex flex-col max-h-[85vh]", onClick: (e) => e.stopPropagation() },
+                React.createElement("div", { className: "p-4 border-b border-slate-700/80 flex justify-between items-center bg-slate-800/90 backdrop-blur flex-shrink-0" },
+                    React.createElement("div", { className: "flex items-center gap-2" },
+                        React.createElement(Trophy, { className: "text-amber-400 w-5 h-5 animate-pulse" }),
+                        React.createElement("h3", { className: "font-extrabold text-sm text-slate-100" }, "\uC2E4\uC2DC\uAC04 \uAE00\uB85C\uBC8C \uB7AD\uD0B9")),
+                    React.createElement("button", { onClick: () => setShowLeaderboard(false), className: "p-1.5 rounded-lg hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold" },
+                        React.createElement(X, { size: 14 }),
+                        "\uB2EB\uAE30")),
+                React.createElement("div", { className: "p-4 overflow-y-auto flex-1 bg-slate-800 custom-scrollbar" },
+                    React.createElement(Leaderboard, { refreshTrigger: 0 }))))))));
+}
+// ==================== App.tsx ====================
+function App() {
+    const [nickname, setNickname] = useState("");
+    const [gameState, setGameState] = useState("lobby");
+    const [timeRemaining, setTimeRemaining] = useState(60);
+    const [score, setScore] = useState(0);
+    const [consecutiveCorrect, setConsecutiveCorrect] = useState(0);
+    const [attempts, setAttempts] = useState(0);
+    const [correctCount, setCorrectCount] = useState(0);
+    const [activeItems, setActiveItems] = useState([]);
+    // Synchronized helper to update activeItems state and activeItemsRef synchronously
+    const updateActiveItems = (itemsOrFn) => {
+        if (typeof itemsOrFn === "function") {
+            setActiveItems((prev) => {
+                const next = itemsOrFn(prev);
+                activeItemsRef.current = next;
+                return next;
+            });
+        }
+        else {
+            activeItemsRef.current = itemsOrFn;
+            setActiveItems(itemsOrFn);
+        }
+    };
+    const [selectedId, setSelectedId] = useState(null);
+    const [hoveredBin, setHoveredBin] = useState(null);
+    const [logs, setLogs] = useState([]);
+    const [isMuted, setIsMuted] = useState(false);
+    const [refreshLeaderboard, setRefreshLeaderboard] = useState(0);
+    const [showComboAnimation, setShowComboAnimation] = useState(false);
+    const [countdown, setCountdown] = useState(5);
+    const [draggedId, setDraggedId] = useState(null);
+    const [difficulty, setDifficulty] = useState("medium");
+    const [showLeaderboardModal, setShowLeaderboardModal] = useState(false);
+    const [showQrModal, setShowQrModal] = useState(false);
+    const [copiedQr, setCopiedQr] = useState(false);
+    const [qrUrl, setQrUrl] = useState(() => {
+        const origin = window.location.href;
+        if (origin.includes("ais-dev-")) {
+            return origin.replace("ais-dev-", "ais-pre-");
+        }
+        return origin;
+    });
+    // References for game loops
+    const timerIntervalRef = useRef(null);
+    const physicsIntervalRef = useRef(null);
+    const spawnTimeoutRef = useRef(null);
+    const uniqueSpawnIdRef = useRef(0);
+    const audioContextRef = useRef(null);
+    const activeItemsRef = useRef([]);
+    const draggedIdRef = useRef(null);
+    // Refs for tracking fresh game state across async loops and timers to prevent stale closures
+    const isEndingRef = useRef(false);
+    const gameSessionIdRef = useRef(null);
+    const scoreRef = useRef(0);
+    const attemptsRef = useRef(0);
+    const correctCountRef = useRef(0);
+    const nicknameRef = useRef("");
+    const updateDraggedId = (id) => {
+        setDraggedId(id);
+        draggedIdRef.current = id;
+    };
+    // Synchronize activeItemsRef with activeItems state
+    useEffect(() => {
+        activeItemsRef.current = activeItems;
+    }, [activeItems]);
+    // Synchronize state values with refs to avoid stale closures in callbacks
+    useEffect(() => { scoreRef.current = score; }, [score]);
+    useEffect(() => { attemptsRef.current = attempts; }, [attempts]);
+    useEffect(() => { correctCountRef.current = correctCount; }, [correctCount]);
+    useEffect(() => { nicknameRef.current = nickname; }, [nickname]);
+    // -------------------------------------------------------------
+    // Web Audio API Synthesizer (Zero-Asset Retro Arcade Sounds)
+    // -------------------------------------------------------------
+    const initAudio = () => {
+        try {
+            if (!audioContextRef.current) {
+                audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioContextRef.current && audioContextRef.current.state === "suspended") {
+                audioContextRef.current.resume().catch((err) => console.warn("AudioContext resume failed:", err));
+            }
+        }
+        catch (e) {
+            console.warn("AudioContext initialization failed:", e);
+        }
+    };
+    const playSynthSound = (type) => {
+        if (isMuted)
+            return;
+        try {
+            initAudio();
+            const ctx = audioContextRef.current;
+            if (!ctx)
+                return;
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            const now = ctx.currentTime;
+            if (type === "correct") {
+                // Bright dual tone ascending
+                osc.type = "sine";
+                osc.frequency.setValueAtTime(523.25, now); // C5
+                osc.frequency.setValueAtTime(659.25, now + 0.1); // E5
+                gain.gain.setValueAtTime(0.15, now);
+                gain.gain.exponentialRampToValueAtTime(0.01, now + 0.25);
+                osc.start(now);
+                osc.stop(now + 0.25);
+            }
+            else if (type === "wrong") {
+                // Short low buzzer tone
+                osc.type = "triangle";
+                osc.frequency.setValueAtTime(180, now);
+                osc.frequency.exponentialRampToValueAtTime(100, now + 0.3);
+                gain.gain.setValueAtTime(0.2, now);
+                gain.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+                osc.start(now);
+                osc.stop(now + 0.3);
+            }
+            else if (type === "miss") {
+                // Short muffled slide for dropped item
+                osc.type = "sawtooth";
+                osc.frequency.setValueAtTime(220, now);
+                osc.frequency.exponentialRampToValueAtTime(60, now + 0.4);
+                gain.gain.setValueAtTime(0.1, now);
+                gain.gain.exponentialRampToValueAtTime(0.01, now + 0.4);
+                osc.start(now);
+                osc.stop(now + 0.4);
+            }
+            else if (type === "combo") {
+                // Energetic multi-tone fanfare
+                osc.type = "square";
+                osc.frequency.setValueAtTime(523.25, now); // C5
+                osc.frequency.setValueAtTime(659.25, now + 0.08); // E5
+                osc.frequency.setValueAtTime(783.99, now + 0.16); // G5
+                osc.frequency.setValueAtTime(1046.50, now + 0.24); // C6
+                gain.gain.setValueAtTime(0.1, now);
+                gain.gain.exponentialRampToValueAtTime(0.01, now + 0.45);
+                osc.start(now);
+                osc.stop(now + 0.45);
+            }
+            else if (type === "gameover") {
+                // Sweet melodic outcome chime
+                osc.type = "sine";
+                osc.frequency.setValueAtTime(523.25, now); // C5
+                osc.frequency.setValueAtTime(392.00, now + 0.15); // G4
+                osc.frequency.setValueAtTime(329.63, now + 0.3); // E4
+                osc.frequency.setValueAtTime(261.63, now + 0.45); // C4
+                gain.gain.setValueAtTime(0.15, now);
+                gain.gain.exponentialRampToValueAtTime(0.01, now + 0.7);
+                osc.start(now);
+                osc.stop(now + 0.7);
+            }
+        }
+        catch (e) {
+            console.warn("오디오 재생 에러:", e);
+        }
+    };
+    // -------------------------------------------------------------
+    // Game Actions & Loops
+    // -------------------------------------------------------------
+    const startGame = (name, diff) => {
+        initAudio(); // Initialize & resume AudioContext directly inside this direct user click gesture!
+        setNickname(name);
+        setDifficulty(diff);
+        setScore(0);
+        setConsecutiveCorrect(0);
+        setAttempts(0);
+        setCorrectCount(0);
+        updateActiveItems([]);
+        setLogs([]);
+        setTimeRemaining(60);
+        setSelectedId(null);
+        setHoveredBin(null);
+        updateDraggedId(null);
+        setCountdown(5);
+        setGameState("countdown");
+        setShowComboAnimation(false);
+        uniqueSpawnIdRef.current = 0;
+        // Generate unique session ID to guarantee no duplicate records in DB
+        gameSessionIdRef.current = `session_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
+        // Reset our game end prevention ref
+        isEndingRef.current = false;
+    };
+    // 5-Second Countdown before game starts
+    useEffect(() => {
+        let interval = null;
+        if (gameState === "countdown") {
+            setCountdown(5);
+            interval = setInterval(() => {
+                setCountdown((prev) => {
+                    if (prev <= 1) {
+                        if (interval)
+                            clearInterval(interval);
+                        setGameState("playing");
+                        return 0;
+                    }
+                    // Play a sound on each tick
+                    try {
+                        playSynthSound("correct");
+                    }
+                    catch (e) { }
+                    return prev - 1;
+                });
+            }, 1000);
+        }
+        return () => {
+            if (interval)
+                clearInterval(interval);
+        };
+    }, [gameState]);
+    const pauseGame = () => {
+        if (gameState === "playing") {
+            setGameState("paused");
+        }
+    };
+    const resumeGame = () => {
+        if (gameState === "paused") {
+            setGameState("playing");
+        }
+    };
+    const restartGame = () => {
+        startGame(nickname, difficulty);
+    };
+    const resetToLobby = () => {
+        if (timerIntervalRef.current)
+            clearInterval(timerIntervalRef.current);
+        if (physicsIntervalRef.current)
+            clearInterval(physicsIntervalRef.current);
+        if (spawnTimeoutRef.current)
+            clearTimeout(spawnTimeoutRef.current);
+        setScore(0);
+        setConsecutiveCorrect(0);
+        setAttempts(0);
+        setCorrectCount(0);
+        updateActiveItems([]);
+        setLogs([]);
+        setTimeRemaining(60);
+        setSelectedId(null);
+        setHoveredBin(null);
+        updateDraggedId(null);
+        setCountdown(5);
+        setGameState("lobby");
+        setShowComboAnimation(false);
+        setShowLeaderboardModal(false);
+        uniqueSpawnIdRef.current = 0;
+    };
+    // 60-Second Countdown Clock (only handles decrementing state)
+    useEffect(() => {
+        if (gameState === "playing") {
+            timerIntervalRef.current = setInterval(() => {
+                setTimeRemaining((prev) => {
+                    if (prev <= 1) {
+                        return 0;
+                    }
+                    return prev - 1;
+                });
+            }, 1000);
+        }
+        return () => {
+            if (timerIntervalRef.current)
+                clearInterval(timerIntervalRef.current);
+        };
+    }, [gameState]);
+    // Handle Game End when time runs out (Runs outside state updaters to prevent double execution)
+    useEffect(() => {
+        if (gameState === "playing" && timeRemaining === 0) {
+            endGame();
+        }
+    }, [timeRemaining, gameState]);
+    // physics/move ticking for elements on belt
+    useEffect(() => {
+        if (gameState === "playing") {
+            physicsIntervalRef.current = setInterval(() => {
+                const currentItems = activeItemsRef.current;
+                if (currentItems.length === 0)
+                    return;
+                // Sort items by progress descending so we can adjust trailing items based on leading items
+                const sorted = [...currentItems].sort((a, b) => b.progress - a.progress);
+                const updated = [];
+                const fellOff = [];
+                for (let i = 0; i < sorted.length; i++) {
+                    const item = sorted[i];
+                    // If this item is currently being dragged, suspend its horizontal movement on the conveyor belt
+                    if (item.activeId === draggedIdRef.current) {
+                        updated.push(item);
+                        continue;
+                    }
+                    // 20ms loop is 5 times faster than 100ms, so add speed / 5 for pixel-perfect smooth fluid motion
+                    let nextProgress = item.progress + (item.speed / 5);
+                    // Enforce minimum spacing constraint of 23% behind the item in front
+                    if (updated.length > 0) {
+                        const frontItem = updated[updated.length - 1];
+                        const maxAllowedProgress = frontItem.progress - 23;
+                        if (nextProgress > maxAllowedProgress) {
+                            nextProgress = maxAllowedProgress;
+                        }
+                    }
+                    // Prevent negative progress values
+                    nextProgress = Math.max(0, nextProgress);
+                    if (nextProgress >= 100) {
+                        fellOff.push(item);
+                    }
+                    else {
+                        updated.push({
+                            ...item,
+                            progress: nextProgress,
+                        });
+                    }
+                }
+                // Trigger fall-off effects if any
+                for (const item of fellOff) {
+                    handleItemFallOff(item);
+                }
+                updateActiveItems(updated);
+            }, 20); // 20ms yields 50fps, providing buttery smooth movement
+        }
+        return () => {
+            if (physicsIntervalRef.current)
+                clearInterval(physicsIntervalRef.current);
+        };
+    }, [gameState]);
+    // Spawning logic (Runs while playing, ensures variety)
+    useEffect(() => {
+        let timeoutId = null;
+        const spawnLoop = () => {
+            if (gameState !== "playing")
+                return;
+            const currentItems = activeItemsRef.current;
+            // Limit total active items on the belt to prevent overwhelming
+            if (currentItems.length >= 4) {
+                timeoutId = setTimeout(spawnLoop, 1500);
+                return;
+            }
+            // Check if the newest spawned item is too close to the starting point (progress < 23)
+            const tooClose = currentItems.some((item) => item.progress < 23);
+            if (tooClose) {
+                timeoutId = setTimeout(spawnLoop, 500);
+                return;
+            }
+            // Select random trash item
+            const randomIndex = Math.floor(Math.random() * WASTE_ITEMS.length);
+            const baseItem = WASTE_ITEMS[randomIndex];
+            // Custom speed based on difficulty (exactly 120% of previous speeds)
+            let speed = 0.6; // Easy
+            if (baseItem.difficulty === "보통")
+                speed = 0.9; // Medium
+            if (baseItem.difficulty === "어려움")
+                speed = 1.2; // Hard
+            // Apply chosen game difficulty speed multiplier
+            let difficultyMultiplier = 1.0;
+            if (difficulty === "easy")
+                difficultyMultiplier = 0.8;
+            else if (difficulty === "hard")
+                difficultyMultiplier = 1.4;
+            else if (difficulty === "very_hard")
+                difficultyMultiplier = 2.0;
+            // Introduce random speed variance with difficulty modifier
+            const adjustedSpeed = speed * (0.8 + Math.random() * 0.4) * difficultyMultiplier;
+            uniqueSpawnIdRef.current += 1;
+            const newItem = {
+                ...baseItem,
+                activeId: `${baseItem.id}_${uniqueSpawnIdRef.current}`,
+                progress: 0,
+                speed: adjustedSpeed,
+            };
+            updateActiveItems((prev) => [...prev, newItem]);
+            // Schedule next spawn (1.8s - 3.1s interval for 120% speed)
+            const nextDelay = 1800 + Math.random() * 1300;
+            timeoutId = setTimeout(spawnLoop, nextDelay);
+        };
+        if (gameState === "playing") {
+            timeoutId = setTimeout(spawnLoop, 400);
+        }
+        return () => {
+            if (timeoutId)
+                clearTimeout(timeoutId);
+        };
+    }, [gameState, difficulty]);
+    // When an item falls off the conveyor belt
+    const handleItemFallOff = (item) => {
+        playSynthSound("miss");
+        setScore((prev) => prev - 20);
+        setConsecutiveCorrect(0); // break streak
+        const logEntry = {
+            id: `${item.activeId}_fall_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+            itemName: item.name,
+            emoji: item.emoji,
+            selectedCategory: "",
+            correctCategory: item.category,
+            isCorrect: false,
+            scoreChange: -20,
+            timestamp: new Date(),
+            tip: item.tip,
+        };
+        setLogs((prev) => [logEntry, ...prev]);
+    };
+    // Sorting Handler (Used by both Drag & Drop and Tap controls)
+    const handleSort = (activeId, binCategory) => {
+        // 1. Find the target item in current state ref
+        const targetItem = activeItemsRef.current.find((i) => i.activeId === activeId);
+        if (!targetItem)
+            return;
+        // 2. Remove sorted item from conveyor belt state
+        updateActiveItems((prev) => prev.filter((i) => i.activeId !== activeId));
+        const isCorrect = targetItem.category === binCategory;
+        let pointsGained = isCorrect ? 60 : -30;
+        let nextStreak = isCorrect ? consecutiveCorrect + 1 : 0;
+        let comboTriggered = false;
+        // Consecutive correct answers bonus
+        if (isCorrect && nextStreak > 0 && nextStreak % 10 === 0) {
+            pointsGained += 30; // +30 bonus points
+            comboTriggered = true;
+        }
+        // Play synth audio feedback
+        if (comboTriggered) {
+            playSynthSound("combo");
+            setShowComboAnimation(true);
+            setTimeout(() => setShowComboAnimation(false), 2000);
+        }
+        else if (isCorrect) {
+            playSynthSound("correct");
+        }
+        else {
+            playSynthSound("wrong");
+        }
+        // Update metrics
+        setScore((prev) => prev + pointsGained);
+        setAttempts((prev) => prev + 1);
+        setConsecutiveCorrect(nextStreak);
+        if (isCorrect) {
+            setCorrectCount((prev) => prev + 1);
+        }
+        // Create history logs with a guaranteed unique ID
+        const logEntry = {
+            id: `${activeId}_sort_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+            itemName: targetItem.name,
+            emoji: targetItem.emoji,
+            selectedCategory: binCategory,
+            correctCategory: targetItem.category,
+            isCorrect,
+            scoreChange: pointsGained,
+            timestamp: new Date(),
+            tip: targetItem.tip,
+        };
+        setLogs((prev) => [logEntry, ...prev]);
+        // Reset temporary selections
+        if (selectedId === activeId) {
+            setSelectedId(null);
+        }
+    };
+    const handleSelectItem = (id) => {
+        initAudio(); // Initialize audio context on first interactive gesture
+        setSelectedId(id);
+    };
+    const handleBinSelect = (binCategory) => {
+        if (selectedId) {
+            handleSort(selectedId, binCategory);
+        }
+    };
+    // Game End Logic
+    const endGame = async () => {
+        if (isEndingRef.current)
+            return;
+        isEndingRef.current = true;
+        setGameState("finished");
+        playSynthSound("gameover");
+        if (timerIntervalRef.current)
+            clearInterval(timerIntervalRef.current);
+        if (physicsIntervalRef.current)
+            clearInterval(physicsIntervalRef.current);
+        if (spawnTimeoutRef.current)
+            clearTimeout(spawnTimeoutRef.current);
+        // Save score to leaderboard using latest values and unique session ID
+        const currentNickname = nickname || "지구수호자";
+        const currentScore = score;
+        const currentAttempts = attempts;
+        const currentCorrectCount = correctCount;
+        const accuracy = currentAttempts > 0 ? Math.round((currentCorrectCount / currentAttempts) * 100) : 0;
+        const dateString = new Date().toISOString().split("T")[0];
+        const newLeaderboardEntry = {
+            id: gameSessionIdRef.current || undefined,
+            name: currentNickname,
+            score: currentScore,
+            attempts: currentAttempts,
+            accuracy: accuracy,
+            date: dateString,
+        };
+        try {
+            await saveLeaderboardEntry(newLeaderboardEntry);
+            // Trigger Leaderboard refresh
+            setRefreshLeaderboard((prev) => prev + 1);
+        }
+        catch (e) {
+            console.error("랭킹 등록 중 실패:", e);
+        }
+    };
+    return (React.createElement("div", { className: "min-h-screen bg-slate-50 dark:bg-slate-950 font-sans transition-colors duration-300" },
+        React.createElement(AnimatePresence, null, showComboAnimation && (React.createElement(motion.div, { initial: { opacity: 0, scale: 0.5, y: -50 }, animate: { opacity: 1, scale: 1.2, y: 0 }, exit: { opacity: 0, scale: 0.8, y: -20 }, className: "fixed top-12 left-1/2 -translate-x-1/2 z-50 bg-gradient-to-r from-yellow-500 via-orange-500 to-rose-500 text-white font-extrabold px-8 py-4 rounded-3xl shadow-2xl border-4 border-white text-center flex flex-col items-center gap-1" },
+            React.createElement("div", { className: "flex items-center gap-1.5 text-2xl animate-bounce" },
+                React.createElement(Flame, { size: 28, className: "fill-white" }),
+                React.createElement("span", null, "\uC5F0\uC18D 10\uAC1C \uC815\uB2F5!"),
+                React.createElement(Flame, { size: 28, className: "fill-white" })),
+            React.createElement("span", { className: "text-sm font-semibold opacity-90" }, "\uBCF4\uB108\uC2A4 \uC810\uC218 +30\uC810 \uCD94\uAC00 \uC644\uB8CC! \uD83D\uDD25")))),
+        gameState === "lobby" && (React.createElement(NicknameModal, { onStartGame: startGame })),
+        React.createElement("header", { className: "sticky top-0 z-40 bg-white border-b border-slate-200 px-6 py-4 shadow-xs" },
+            React.createElement("div", { className: "max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4" },
+                React.createElement("div", { className: "flex items-center gap-3" },
+                    React.createElement(motion.div, { whileHover: { rotate: 15 }, className: "w-10 h-10 bg-emerald-500 rounded-lg flex items-center justify-center text-white text-2xl font-bold flex-shrink-0" }, "\u267B\uFE0F"),
+                    React.createElement("div", null,
+                        React.createElement("h1", { className: "text-xl font-bold text-slate-900 tracking-tight" }, "\uC790\uC6D0 \uB9C8\uC2A4\uD130: \uBD84\uB9AC\uBC30\uCD9C \uCC4C\uB9B0\uC9C0"),
+                        React.createElement("p", { className: "text-[10px] text-slate-400 font-extrabold uppercase tracking-widest mt-0.5" }, "Recycling Master Simulator"))),
+                gameState !== "lobby" && (React.createElement("div", { className: "flex items-center gap-4 sm:gap-6 md:gap-8 bg-slate-50 border border-slate-100 rounded-2xl px-4 py-2 sm:px-6" },
+                    React.createElement("div", { className: "flex flex-col items-center sm:items-end" },
+                        React.createElement("span", { className: "text-[9px] uppercase font-bold tracking-wider text-slate-400" }, "\uD604\uC7AC \uC810\uC218"),
+                        React.createElement("span", { className: `text-xl sm:text-2xl font-mono font-bold ${score >= 0 ? "text-emerald-600" : "text-rose-500"}` }, String(score).padStart(4, "0"))),
+                    React.createElement("div", { className: "w-[1px] h-8 bg-slate-200" }),
+                    React.createElement("div", { className: "flex flex-col items-center" },
+                        React.createElement("span", { className: "text-[9px] uppercase font-bold tracking-wider text-slate-400" }, "\uB0A8\uC740 \uC2DC\uAC04"),
+                        React.createElement("span", { className: `text-xl sm:text-2xl font-mono font-bold ${timeRemaining <= 10 ? "text-rose-500 animate-pulse" : "text-slate-800"}` },
+                            String(Math.floor(timeRemaining / 60)).padStart(2, "0"),
+                            ":",
+                            String(timeRemaining % 60).padStart(2, "0"))),
+                    React.createElement("div", { className: "w-[1px] h-8 bg-slate-200" }),
+                    React.createElement("div", { className: "flex flex-col items-center" },
+                        React.createElement("span", { className: "text-[9px] uppercase font-bold tracking-wider text-slate-400" }, "\uC5F0\uC18D \uC815\uB2F5"),
+                        React.createElement("span", { className: "text-xl sm:text-2xl font-mono font-bold text-amber-500" },
+                            "\uD83D\uDD25 ",
+                            String(consecutiveCorrect).padStart(2, "0"))),
+                    React.createElement("div", { className: "w-[1px] h-8 bg-slate-200" }),
+                    React.createElement("div", { className: "flex flex-col items-center" },
+                        React.createElement("span", { className: "text-[9px] uppercase font-bold tracking-wider text-slate-400" }, "\uC815\uD655\uB3C4"),
+                        React.createElement("span", { className: "text-xl sm:text-2xl font-mono font-bold text-indigo-500" },
+                            "\uD83C\uDFAF ",
+                            attempts > 0 ? Math.round((correctCount / attempts) * 100) : 0,
+                            "%")))),
+                React.createElement("div", { className: "flex items-center gap-2" },
+                    nickname && (React.createElement("div", { className: "flex items-center gap-1.5" },
+                        React.createElement("span", { className: "text-xs font-bold text-slate-600 bg-slate-100 px-3 py-1.5 rounded-full hidden sm:inline-block" },
+                            "\uD83D\uDC64 ",
+                            nickname),
+                        React.createElement("span", { className: `text-[10px] font-extrabold uppercase px-2.5 py-1.5 rounded-full hidden sm:inline-block ${difficulty === "easy"
+                                ? "bg-emerald-100 text-emerald-700 border border-emerald-200 animate-pulse"
+                                : difficulty === "hard"
+                                    ? "bg-amber-100 text-amber-700 border border-amber-200"
+                                    : difficulty === "very_hard"
+                                        ? "bg-rose-100 text-rose-700 border border-rose-200 animate-bounce"
+                                        : "bg-blue-100 text-blue-700 border border-blue-200"}` }, difficulty === "easy" ? "쉬움 👶" : difficulty === "hard" ? "어려움 ⚡" : difficulty === "very_hard" ? "매우 어려움 💀" : "보통 🚀"))),
+                    React.createElement("button", { onClick: () => setShowQrModal(true), className: "p-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-500 hover:text-indigo-600 transition-all active:scale-95 flex items-center gap-1 cursor-pointer", title: "\uC811\uC18D QR \uCF54\uB4DC \uBCF4\uAE30" },
+                        React.createElement(QrCode, { size: 16 }),
+                        React.createElement("span", { className: "text-xs font-bold hidden sm:inline-block" }, "\uC811\uC18D QR")),
+                    React.createElement("button", { onClick: () => setIsMuted(!isMuted), className: "p-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-500 transition-all active:scale-95 cursor-pointer", title: isMuted ? "음소거 해제" : "음소거" }, isMuted ? React.createElement(VolumeX, { size: 16 }) : React.createElement(Volume2, { size: 16 }))))),
+        React.createElement("main", { className: "max-w-7xl mx-auto p-4 sm:p-6 space-y-6" }, gameState !== "lobby" && (React.createElement("div", { className: "grid grid-cols-1 lg:grid-cols-12 gap-6 items-start" },
+            React.createElement("div", { className: "lg:col-span-8 space-y-6" },
+                React.createElement("div", { className: "flex items-center justify-between" },
+                    React.createElement("div", { className: "flex items-center gap-2" },
+                        React.createElement("span", { className: `w-2.5 h-2.5 rounded-full ${gameState === "playing" ? "bg-emerald-500 animate-ping" : "bg-slate-300"}` }),
+                        React.createElement("span", { className: "text-xs font-bold text-slate-600 dark:text-slate-400" }, gameState === "playing" ? "실시간 분리수거 중" : gameState === "paused" ? "일시 정지됨" : "게임 종료")),
+                    React.createElement("div", { className: "flex items-center gap-2" },
+                        gameState === "playing" && (React.createElement("button", { onClick: pauseGame, className: "px-4 py-2 text-xs font-bold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl transition-all active:scale-95 flex items-center gap-1.5 shadow-sm" },
+                            React.createElement(Pause, { size: 14 }),
+                            "\uC77C\uC2DC\uC815\uC9C0")),
+                        gameState === "paused" && (React.createElement("button", { onClick: resumeGame, className: "px-4 py-2 text-xs font-bold text-white bg-emerald-500 hover:bg-emerald-600 rounded-xl transition-all active:scale-95 flex items-center gap-1.5 shadow-md shadow-emerald-500/20" },
+                            React.createElement(Play, { size: 14 }),
+                            "\uB2E4\uC2DC \uC2DC\uC791 (\uC7AC\uAC1C)")),
+                        React.createElement("button", { onClick: restartGame, className: "px-4 py-2 text-xs font-bold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl transition-all active:scale-95 flex items-center gap-1.5 shadow-sm" },
+                            React.createElement(RotateCcw, { size: 14 }),
+                            "\uB2E4\uC2DC\uD558\uAE30"),
+                        React.createElement("button", { onClick: resetToLobby, className: "px-4 py-2 text-xs font-bold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl transition-all active:scale-95 flex items-center gap-1.5 shadow-sm" },
+                            React.createElement(Home, { size: 14 }),
+                            "\uCC98\uC74C\uBD80\uD130"))),
+                (gameState === "playing" || gameState === "countdown") ? (React.createElement("div", { className: "relative" },
+                    React.createElement(GameBelt, { activeItems: activeItems, selectedId: selectedId, onSelectItem: handleSelectItem, onDragStart: updateDraggedId, onDragUpdate: setHoveredBin, onDragEnd: (activeId, bin) => {
+                            updateDraggedId(null);
+                            if (gameState === "countdown")
+                                return;
+                            if (bin) {
+                                handleSort(activeId, bin);
+                            }
+                            setHoveredBin(null);
+                        } }),
+                    gameState === "countdown" && (React.createElement(motion.div, { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 }, className: "absolute inset-0 bg-slate-900/80 backdrop-blur-xs rounded-3xl flex flex-col items-center justify-center z-30" },
+                        React.createElement(motion.span, { key: countdown, initial: { scale: 2, opacity: 0 }, animate: { scale: 1.1, opacity: 1 }, transition: { type: "spring", stiffness: 180, damping: 12 }, className: "text-7xl sm:text-8xl font-black text-emerald-400 drop-shadow-lg font-mono flex items-center gap-3" },
+                            "\u23F1\uFE0F ",
+                            countdown),
+                        React.createElement("span", { className: "text-xs sm:text-sm font-black text-slate-100 mt-2 tracking-wider animate-pulse" }, "\uBD84\uB9AC\uC218\uAC70\uD568 \uC704\uCE58\uB97C \uBA38\uB9BF\uC18D\uC73C\uB85C \uAE30\uC5B5\uD574 \uB450\uC138\uC694! \uD83E\uDDE0"))))) : gameState === "paused" ? (React.createElement("div", { className: "w-full h-44 bg-slate-100/50 dark:bg-slate-900/50 rounded-3xl border-2 border-dashed border-slate-300 dark:border-slate-800 flex flex-col items-center justify-center gap-2" },
+                    React.createElement(Pause, { size: 36, className: "text-slate-400 animate-pulse" }),
+                    React.createElement("p", { className: "font-extrabold text-sm text-slate-600 dark:text-slate-400" }, "\uAC8C\uC784\uC774 \uC77C\uC2DC\uC815\uC9C0 \uC0C1\uD0DC\uC785\uB2C8\uB2E4"),
+                    React.createElement("button", { onClick: resumeGame, className: "px-4 py-2 text-xs font-bold text-white bg-emerald-500 hover:bg-emerald-600 rounded-xl transition-all active:scale-95" }, "\uAC8C\uC784 \uACC4\uC18D\uD558\uAE30"))) : (React.createElement(motion.div, { initial: { opacity: 0, scale: 0.95 }, animate: { opacity: 1, scale: 1 }, className: "w-full bg-gradient-to-br from-slate-900 via-slate-950 to-slate-900 text-white rounded-3xl p-8 border border-slate-800 shadow-2xl text-center space-y-6" },
+                    React.createElement("div", { className: "flex flex-col items-center gap-1.5" },
+                        React.createElement(motion.div, { animate: { rotate: [0, 10, -10, 0] }, transition: { repeat: Infinity, duration: 4 }, className: "text-5xl" }, "\uD83C\uDFC6"),
+                        React.createElement("h2", { className: "text-2xl font-black tracking-tight mt-2" }, "\uC218\uACE0\uD558\uC168\uC2B5\uB2C8\uB2E4! \uBD84\uB9AC\uBC30\uCD9C \uC644\uB8CC!"),
+                        React.createElement("p", { className: "text-xs text-slate-400" },
+                            nickname,
+                            " \uB2D8\uC758 \uC5D0\uCF54 \uB9AC\uD3EC\uD2B8 \uACB0\uACFC\uB294 \uB2E4\uC74C\uACFC \uAC19\uC2B5\uB2C8\uB2E4.")),
+                    React.createElement("div", { className: "grid grid-cols-3 gap-3 max-w-md mx-auto" },
+                        React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-2xl p-4 text-center" },
+                            React.createElement("span", { className: "text-[9px] font-bold text-slate-400 uppercase block mb-1" }, "\uCD5C\uC885 \uC810\uC218"),
+                            React.createElement("span", { className: "text-xl font-black text-yellow-400" },
+                                score,
+                                "\uC810")),
+                        React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-2xl p-4 text-center" },
+                            React.createElement("span", { className: "text-[9px] font-bold text-slate-400 uppercase block mb-1" }, "\uBC30\uCD9C \uC2DC\uB3C4"),
+                            React.createElement("span", { className: "text-xl font-black text-indigo-400" },
+                                attempts,
+                                "\uD68C")),
+                        React.createElement("div", { className: "bg-white/5 border border-white/10 rounded-2xl p-4 text-center" },
+                            React.createElement("span", { className: "text-[9px] font-bold text-slate-400 uppercase block mb-1" }, "\uC815\uD655\uB3C4"),
+                            React.createElement("span", { className: "text-xl font-black text-emerald-400" },
+                                attempts > 0 ? Math.round((correctCount / attempts) * 100) : 0,
+                                "%"))),
+                    React.createElement("div", { className: "p-4 bg-white/5 rounded-2xl border border-white/10 max-w-md mx-auto text-xs text-left leading-relaxed text-slate-300" },
+                        React.createElement("p", { className: "font-bold text-slate-100 flex items-center gap-1.5 mb-1.5" },
+                            React.createElement(Award, { size: 16, className: "text-yellow-400" }),
+                            "\uC131\uACF5\uC801\uC778 \uBBF8\uB798\uB97C \uC704\uD55C \uD55C \uAC78\uC74C"),
+                        score >= 1000 ? (React.createElement("span", null,
+                            "\uB2F9\uC2E0\uC740 \uC644\uBCBD\uD55C ",
+                            React.createElement("strong", null, "\uCD08\uB85D\uC9C0\uAD6C\uC758 \uD658\uACBD \uD30C\uC218\uAFBC (Eco Champion)"),
+                            "\uC785\uB2C8\uB2E4! \uC62C\uBC14\uB978 \uC4F0\uB808\uAE30 \uBD84\uB9AC\uBC30\uCD9C \uC0C1\uC2DD\uC774 \uC644\uBCBD\uD558\uAC8C \uB0B4\uC7AC\uD654\uB418\uC5B4 \uC788\uC2B5\uB2C8\uB2E4. \uCD5C\uACE0\uC758 \uB7AD\uCEE4\uB4E4\uACFC \uACBD\uC7C1\uD558\uC138\uC694!")) : score >= 600 ? (React.createElement("span", null,
+                            "\uBA4B\uC838\uC694! ",
+                            React.createElement("strong", null, "\uC9C0\uAD6C\uC0B4\uB9AC\uBBF8 (Eco Helper)"),
+                            "\uB85C\uC11C \uD6CC\uB96D\uD55C \uC790\uACA9\uC744 \uAC16\uCD94\uACE0 \uC788\uC2B5\uB2C8\uB2E4. \uCE6B\uC194, \uB2EC\uAC40\uAECD\uC9C8, \uAE68\uC9C4 \uBCD1\uACFC \uAC19\uC740 \uD5F7\uAC08\uB9AC\uAE30 \uC26C\uC6B4 \uC4F0\uB808\uAE30 \uBD84\uB9AC \uADDC\uCE59\uC744 \uC870\uAE08\uB9CC \uB354 \uBCF4\uC644\uD574 \uBA85\uC608\uC758 \uC804\uB2F9\uC5D0 \uC62C\uB77C\uBCF4\uC138\uC694!")) : (React.createElement("span", null,
+                            "\uAD1C\uCC2E\uC2B5\uB2C8\uB2E4! ",
+                            React.createElement("strong", null, "\uC5D0\uCF54 \uBE44\uAE30\uB108 (Eco Beginner)"),
+                            " \uB2E8\uACC4\uC785\uB2C8\uB2E4. \uC544\uB798\uC758 \uD788\uC2A4\uD1A0\uB9AC \uD53C\uB4DC\uBC31 \uB3C4\uAC10\uC744 \uBCF4\uBA74\uC11C \uC624\uB2F5 \uBC30\uCD9C \uD301\uC744 \uAF3C\uAF3C\uD788 \uBCF5\uC2B5\uD574 \uBCF4\uC138\uC694. \uD55C \uBC88 \uB354 \uB3C4\uC804\uD574\uC11C \uC810\uC218\uB97C \uC62C\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4!"))),
+                    React.createElement("div", { className: "flex flex-wrap gap-3 justify-center" },
+                        React.createElement("button", { onClick: () => setShowLeaderboardModal(true), className: "px-8 py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold rounded-2xl shadow-lg hover:shadow-xl shadow-indigo-500/20 active:scale-98 transition-all inline-flex items-center gap-2 cursor-pointer" },
+                            React.createElement(Trophy, { size: 16 }),
+                            "\uC2E4\uC2DC\uAC04 \uB7AD\uD0B9 \uD655\uC778"),
+                        React.createElement("button", { onClick: restartGame, className: "px-8 py-4 bg-emerald-500 hover:bg-emerald-600 text-white font-extrabold rounded-2xl shadow-lg hover:shadow-xl shadow-emerald-500/20 active:scale-98 transition-all inline-flex items-center gap-2 cursor-pointer" },
+                            "\uD55C \uBC88 \uB354 \uB3C4\uC804\uD558\uAE30",
+                            React.createElement(RotateCcw, { size: 16 })),
+                        React.createElement("button", { onClick: resetToLobby, className: "px-8 py-4 bg-slate-700 hover:bg-slate-600 text-white font-extrabold rounded-2xl shadow-lg hover:shadow-xl shadow-slate-500/20 active:scale-98 transition-all inline-flex items-center gap-2 cursor-pointer" },
+                            "\uCC98\uC74C\uBD80\uD130",
+                            React.createElement(Home, { size: 16 }))))),
+                React.createElement(BinGrid, { onBinSelect: handleBinSelect, activeSelectedId: selectedId, hoveredBin: hoveredBin })),
+            React.createElement("div", { className: "lg:col-span-4 space-y-6" },
+                React.createElement(HistoryLog, { logs: logs }))))),
+        React.createElement(AnimatePresence, null, showLeaderboardModal && (React.createElement("div", { className: "fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs" },
+            React.createElement(motion.div, { initial: { opacity: 0, scale: 0.95, y: 20 }, animate: { opacity: 1, scale: 1, y: 0 }, exit: { opacity: 0, scale: 0.95, y: 20 }, transition: { type: "spring", duration: 0.4 }, className: "w-full max-w-xl bg-slate-800 rounded-3xl overflow-hidden shadow-2xl border border-slate-700 relative flex flex-col max-h-[85vh]" },
+                React.createElement("button", { onClick: () => setShowLeaderboardModal(false), className: "absolute top-4 right-4 text-slate-400 hover:text-white p-2 rounded-xl hover:bg-slate-700 transition-all z-10 cursor-pointer" },
+                    React.createElement(X, { size: 20 })),
+                React.createElement("div", { className: "p-1 flex-1 overflow-y-auto" },
+                    React.createElement(Leaderboard, { refreshTrigger: refreshLeaderboard })))))),
+        React.createElement(AnimatePresence, null, showQrModal && (React.createElement("div", { className: "fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs" },
+            React.createElement(motion.div, { initial: { opacity: 0, scale: 0.95, y: 20 }, animate: { opacity: 1, scale: 1, y: 0 }, exit: { opacity: 0, scale: 0.95, y: 20 }, transition: { type: "spring", duration: 0.4 }, className: "w-full max-w-md bg-white rounded-3xl overflow-hidden shadow-2xl border border-slate-200 relative p-6 flex flex-col items-center text-center space-y-4" },
+                React.createElement("button", { onClick: () => setShowQrModal(false), className: "absolute top-4 right-4 text-slate-400 hover:text-slate-600 p-2 rounded-xl hover:bg-slate-100 transition-all z-10 cursor-pointer" },
+                    React.createElement(X, { size: 20 })),
+                React.createElement("div", { className: "w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center text-xl mt-2" }, "\uD83D\uDCF1"),
+                React.createElement("div", null,
+                    React.createElement("h3", { className: "font-extrabold text-slate-900 text-lg" }, "\uD559\uC0DD \uC811\uC18D\uC6A9 QR \uCF54\uB4DC"),
+                    React.createElement("p", { className: "text-xs text-slate-500 mt-1" }, "\uC2A4\uB9C8\uD2B8\uD3F0\uC774\uB098 \uD0DC\uBE14\uB9BF\uC73C\uB85C \uC544\uB798 QR \uCF54\uB4DC\uB97C \uCC0D\uC73C\uBA74 \uC989\uC2DC \uC811\uC18D\uD558\uC5EC \uD50C\uB808\uC774\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.")),
+                React.createElement("div", { className: "bg-slate-50 p-4 rounded-3xl border border-slate-100 shadow-xs" },
+                    React.createElement("img", { src: `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qrUrl)}`, alt: "Game Access QR Code", className: "w-48 h-48 rounded-xl", referrerPolicy: "no-referrer" })),
+                window.location.href.includes("ais-dev-") ? (React.createElement("div", { className: "w-full text-left p-3 bg-amber-50 border border-amber-100 rounded-2xl text-[11px] text-amber-700 font-medium leading-relaxed" },
+                    React.createElement("span", { className: "font-extrabold block text-amber-800 mb-0.5" }, "\u26A0\uFE0F \uAC1C\uBC1C \uD658\uACBD \uAC10\uC9C0 (\uACF5\uC720\uC6A9 \uC8FC\uC18C \uC790\uB3D9 \uBCC0\uD658 \uC644\uB8CC)"),
+                    "\uD559\uC0DD\uB4E4\uC740 \uAC1C\uBC1C \uD658\uACBD \uC8FC\uC18C(",
+                    React.createElement("span", { className: "font-mono" }, "ais-dev-"),
+                    ")\uC5D0 \uC9C1\uC811 \uC811\uC18D\uD560 \uC218 \uC5C6\uC73C\uBBC0\uB85C, QR \uCF54\uB4DC\uAC00 \uC790\uB3D9\uC73C\uB85C ",
+                    React.createElement("strong", null,
+                        "\uACF5\uAC1C \uACF5\uC720\uC6A9 \uC8FC\uC18C(",
+                        React.createElement("span", { className: "font-mono" }, "ais-pre-"),
+                        ")"),
+                    "\uB85C \uC0DD\uC131\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uB9CC\uC57D \uB2E4\uB978 \uB3C4\uBA54\uC778\uC73C\uB85C \uC548\uB0B4\uD558\uB824\uBA74 \uC544\uB798 \uC8FC\uC18C\uB97C \uC218\uC815\uD574\uC8FC\uC138\uC694.")) : (React.createElement("div", { className: "w-full text-left p-3 bg-emerald-50 border border-emerald-100 rounded-2xl text-[11px] text-emerald-700 font-medium text-center" },
+                    React.createElement("strong", null, "\u2705 \uACF5\uAC1C \uBC30\uD3EC(ais-pre) \uC8FC\uC18C\uC785\uB2C8\uB2E4."),
+                    " \uD559\uC0DD\uB4E4\uC774 \uC811\uC18D \uAC00\uB2A5\uD55C \uCD5C\uC801\uC758 \uB3C4\uBA54\uC778\uC785\uB2C8\uB2E4.")),
+                React.createElement("div", { className: "w-full text-left space-y-1" },
+                    React.createElement("label", { className: "text-[10px] font-bold text-slate-500 block" }, "\uC811\uC18D\uD560 \uC8FC\uC18C \uC124\uC815"),
+                    React.createElement("div", { className: "w-full flex items-center gap-2 bg-slate-50 p-3 rounded-2xl text-xs border border-slate-200" },
+                        React.createElement("input", { type: "text", value: qrUrl, onChange: (e) => setQrUrl(e.target.value), className: "bg-transparent border-none outline-none font-mono text-xs text-slate-600 flex-1 px-1", placeholder: "https://..." }),
+                        React.createElement("button", { onClick: () => {
+                                navigator.clipboard.writeText(qrUrl);
+                                setCopiedQr(true);
+                                setTimeout(() => setCopiedQr(false), 2000);
+                            }, className: "px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1 shrink-0" },
+                            React.createElement(Copy, { size: 12 }),
+                            React.createElement("span", null, copiedQr ? "복사완료!" : "링크복사")))),
+                React.createElement("button", { onClick: () => setShowQrModal(false), className: "w-full py-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-2xl transition-all active:scale-98 cursor-pointer text-sm" }, "\uB2EB\uAE30"))))),
+        React.createElement("footer", { className: "mt-12 border-t border-slate-100 dark:border-slate-900 bg-white dark:bg-slate-950 py-8 text-center text-xs text-slate-400 space-y-2" },
+            React.createElement("div", { className: "flex items-center justify-center gap-1.5" },
+                React.createElement(Heart, { size: 12, className: "text-rose-500 fill-rose-500 animate-pulse" }),
+                React.createElement("span", null, "\uC9C0\uAD6C\uB97C \uC9C0\uD0A4\uB294 \uC544\uB984\uB2E4\uC6B4 \uC0C1\uC2DD, \uC62C\uBC14\uB978 \uBD84\uB9AC\uC218\uAC70 \uBD84\uB9AC\uBC30\uCD9C \uAC8C\uC784")),
+            React.createElement("p", { className: "font-mono text-[10px]" }, "\u00A9 2026 Eco Recycling Master Simulator. Powered by Antigravity AI build."))));
+}
+// ==================== 렌더링 (main.tsx) ====================
+createRoot(document.getElementById('root')).render(React.createElement(StrictMode, null, React.createElement(App, null)));
+
+
+document.getElementById('boot-status').classList.add('hidden');
+</script>
+</body>
+</html>
